@@ -7,9 +7,11 @@
 #
 #   1) Creates your user, adds it to wheel and grants sudo
 #   2) Optionally runs zsh_setup.sh for that user (zsh, Oh My Zsh, Powerlevel10k)
-#   3) Optionally removes the default `alarm` account (password: alarm)
-#   4) LOCKS the root password (passwd -l), only once sudo is verified
-#   5) Removes its own login hook
+#   3) Optionally installs htop, and fastfetch with an `info` alias that also
+#      runs at every login
+#   4) Optionally removes the default `alarm` account (password: alarm)
+#   5) LOCKS the root password (passwd -l), only once sudo is verified
+#   6) Removes its own login hook
 #
 # Ctrl+C aborts without changes to the hook; it runs again at the next root login.
 #
@@ -23,12 +25,16 @@ set -euo pipefail
 PROFILE="/root/.bash_profile"
 HOOK_BEGIN="# >>> archopen firstboot >>>"
 HOOK_END="# <<< archopen firstboot <<<"
+INFO_BEGIN="# >>> archopen info >>>"
+INFO_END="# <<< archopen info <<<"
 ZSH_SETUP="/usr/local/share/archopen/zsh_setup.sh"
 TEMP_SUDOERS="/etc/sudoers.d/99-archopen-firstboot"
 SSH_PORT="${ARCHOPEN_SSH_PORT:-2222}"
 
 NEW_USER=""
 DO_ZSH=1
+DO_HTOP=1
+DO_FASTFETCH=1
 REMOVE_ALARM=0
 
 if [ -t 1 ]; then
@@ -118,6 +124,9 @@ ask_questions() {
     DO_ZSH=0
   fi
 
+  ask_yes_no "Install htop (interactive process viewer)?" y && DO_HTOP=1 || DO_HTOP=0
+  ask_yes_no "Install fastfetch (system info, 'info' command, shown at every login)?" y && DO_FASTFETCH=1 || DO_FASTFETCH=0
+
   if [ "$NEW_USER" != "alarm" ] && id alarm >/dev/null 2>&1; then
     ask_yes_no "Remove the default 'alarm' account (its password is 'alarm')?" y && REMOVE_ALARM=1 || REMOVE_ALARM=0
   fi
@@ -198,6 +207,49 @@ run_zsh_setup() {
   rm -f "$TEMP_SUDOERS"
 }
 
+install_tools() {
+  local pkgs=()
+  [ "$DO_HTOP" = 1 ] && pkgs+=(htop)
+  [ "$DO_FASTFETCH" = 1 ] && pkgs+=(fastfetch)
+  [ "${#pkgs[@]}" -gt 0 ] || return 0
+  log "Packages: ${pkgs[*]}"
+  if pacman -Syu --needed --noconfirm "${pkgs[@]}"; then
+    ok "installed: ${pkgs[*]}"
+  else
+    warn "pacman failed; install them later with: sudo pacman -S ${pkgs[*]}"
+  fi
+}
+
+# append_block <file> <text>: replaces the archopen info block in a file of the new user
+append_block() {
+  local file="$1" tmp
+  tmp="$(mktemp)"
+  if [ -f "$file" ]; then
+    awk -v b="$INFO_BEGIN" -v e="$INFO_END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$file" > "$tmp"
+  fi
+  printf '%s\n%s\n%s\n' "$INFO_BEGIN" "$2" "$INFO_END" >> "$tmp"
+  install -m 0644 -o "$NEW_USER" -g "$(id -gn "$NEW_USER")" "$tmp" "$file"
+  rm -f "$tmp"
+}
+
+setup_info() {
+  [ "$DO_FASTFETCH" = 1 ] && command -v fastfetch >/dev/null 2>&1 || return 0
+  log "'info' command"
+  local home rc profile
+  home="$(getent passwd "$NEW_USER" | cut -d: -f6)"
+  if [ "$(getent passwd "$NEW_USER" | cut -d: -f7)" = /usr/bin/zsh ]; then
+    rc="$home/.zshrc"
+    # .zprofile runs before .zshrc, so the output does not upset Powerlevel10k's instant prompt
+    profile="$home/.zprofile"
+  else
+    rc="$home/.bashrc"
+    profile="$home/.bash_profile"
+  fi
+  append_block "$rc" "alias info='fastfetch'"
+  append_block "$profile" '[ -t 1 ] && command -v fastfetch >/dev/null 2>&1 && fastfetch'
+  ok "'info' runs fastfetch; it also runs at every login ($(basename "$profile"))"
+}
+
 remove_alarm() {
   [ "$REMOVE_ALARM" = 1 ] || return 0
   log "Default 'alarm' account"
@@ -237,7 +289,9 @@ run_wizard() {
   ask_questions
   create_user
   setup_sudo
+  install_tools
   run_zsh_setup
+  setup_info
   remove_alarm
   lock_root
   remove_hook

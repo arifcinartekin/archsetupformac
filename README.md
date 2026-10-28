@@ -66,9 +66,10 @@ On the first `archopen`, log in as `root` / `root`. A one-time wizard starts and
 
 1. asks for your **username** (default `user`) and password, and adds you to `wheel` with **sudo**
 2. optionally runs [**zsh_setup**](https://github.com/arifcinartekin/zsh_setup) for you: zsh, Oh My Zsh, Powerlevel10k, autosuggestions, syntax highlighting. The p10k configuration wizard runs at the end
-3. optionally removes the default `alarm` account (its password is publicly known: `alarm`)
-4. **locks the root password**, but only after it has verified that your sudo works, so you can't lock yourself out
-5. removes itself and logs you out. From then on, log in as your own user and use `sudo -i` for root.
+3. optionally installs **htop**, and **fastfetch** with an `info` command. fastfetch also runs at every login, so you see the system info each time you `archopen`
+4. optionally removes the default `alarm` account (its password is publicly known: `alarm`)
+5. **locks the root password**, but only after it has verified that your sudo works, so you can't lock yourself out
+6. removes itself and logs you out. From then on, log in as your own user and use `sudo -i` for root.
 
 Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to skip it. It runs again at the next root login.
 
@@ -177,6 +178,7 @@ Files on your Mac after install (`~/vm/archarm`): `disk.qcow2`, `efi.qcow2`, `va
 | SSH: `REMOTE HOST IDENTIFICATION HAS CHANGED` | You reinstalled: `ssh-keygen -R "[localhost]:2222"` |
 | Locked out of root | `sudo passwd root` as your user |
 | Skipped zsh setup | As your user: `sh /usr/local/share/archopen/zsh_setup.sh` |
+| No fastfetch at login | Remove the `archopen info` block from `~/.zprofile` (bash: `~/.bash_profile`). The `info` alias is in `~/.zshrc` (bash: `~/.bashrc`) |
 
 ---
 
