@@ -170,7 +170,7 @@ Files on your Mac after install (`~/vm/archarm`): `disk.qcow2`, `efi.qcow2`, `va
 
 | Problem | Fix |
 |---|---|
-| Install failed | Read `~/vm/archarm/install.log`, then run the setup again. It resumes downloads and redoes the disk |
+| Install failed | Read `~/vm/archarm/install.log` with `less` or `cat -v` (plain `cat` lets your terminal answer the escape sequences recorded in it, which leaves junk at your prompt), then run the setup again. It resumes downloads and redoes the disk |
 | `There is already an install` | `archuninstall` first, or `ARCHOPEN_FORCE=1` |
 | `The Arch VM is already running` | It's open in another terminal. `archclose` |
 | `archclose` says *no QMP socket* | The VM was started by a launcher from an older version: `archclose --force`, or reinstall |

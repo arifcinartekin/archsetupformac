@@ -912,9 +912,11 @@ expect {
 puts "    - Logged in"; flush stdout
 
 set timeout 60
-send -- "echo ARCHOPEN_\$((20+22))_\$(uname -r)_\$(findmnt -n -o SOURCE /boot)_\$(uname -n)\r"
+# Every field is followed by a fixed delimiter: output can arrive in pieces,
+# and an unterminated last group would match a partial value
+send -- "echo ARCHOPEN_\$((20+22))_\$(uname -r)_\$(findmnt -n -o SOURCE /boot)_\$(uname -n)_END\r"
 expect {
-    -re {ARCHOPEN_42_([^_\r\n]+)_(/dev/[a-z0-9]+)_([A-Za-z0-9.-]+)} {
+    -re {ARCHOPEN_42_([^_\r\n]+)_(/dev/[a-z0-9]+)_([A-Za-z0-9.-]+)_END} {
         set kver $expect_out(1,string)
         set bootdev $expect_out(2,string)
         set host $expect_out(3,string)
@@ -946,7 +948,7 @@ flush stdout
 # The wizard starts on the next interactive root login
 send -- "/usr/local/sbin/archopen-firstboot --enable; echo ARCHOPEN_EN=\$?\r"
 expect {
-    -re {ARCHOPEN_EN=([0-9]+)} {
+    -re {ARCHOPEN_EN=([0-9]+)\r} {
         if {$expect_out(1,string) != 0} { die "could not enable the first-boot wizard" }
     }
     timeout { die "could not enable the first-boot wizard (timeout)" }
