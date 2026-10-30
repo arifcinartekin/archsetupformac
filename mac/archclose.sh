@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# archclose - shuts the archopen Arch VM down from macOS
+# archclose - shuts the Arch VM of Arch Setup for Mac down from macOS
 #
 # Presses the virtual power button through QEMU's QMP socket, so Arch shuts
 # down cleanly (same as `poweroff` inside the VM). If the VM has not stopped

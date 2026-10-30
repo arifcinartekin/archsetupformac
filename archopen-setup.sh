@@ -1,27 +1,31 @@
 #!/bin/bash
 #
-# archopen-setup.sh
+# archopen-setup.sh - Arch Setup for Mac
 #
-# Installs Arch Linux ARM on macOS (Apple Silicon) with QEMU and adds three
-# terminal commands: `archopen`, `archclose` and `archuninstall`.
+# Installs Arch Linux ARM on macOS (Apple Silicon) with QEMU and adds four
+# terminal commands: `archopen`, `archclose`, `archuninstall` and `archseal`.
 # One command, fully automatic:
 #
 #   1. Homebrew + qemu + gnupg (installed if missing)
-#   2. Downloads the Alpine ISO and the pinned Arch Linux ARM tarball and
-#      verifies them (sha256 + GPG)
+#   2. Asks for the disk passphrase, downloads the Alpine ISO and the pinned
+#      Arch Linux ARM tarball and verifies them (sha256 + GPG)
 #   3. Drives a temporary Alpine VM over the serial console to prepare the disk:
-#      ESP (FAT32) + root (ext4), the tarball is extracted as root, and inside a
-#      chroot it sets up pacman-key / pacman -Syu / systemd-boot / fstab /
-#      hostname / terminfo / first-boot wizard
-#   4. Generates start-uefi.sh, boots the new system via UEFI, logs in and checks it
-#   5. Adds the archopen / archclose / archuninstall aliases to ~/.zshrc
+#      ESP (FAT32) + root (LUKS2 + btrfs subvolumes), the tarball is extracted
+#      as root, and inside a chroot it sets up pacman-key / pacman -Syu /
+#      initramfs with LUKS / systemd-boot / fstab / hostname / terminfo /
+#      first-boot wizard
+#   4. Generates start-uefi.sh, seals the VM files (archseal), boots the new
+#      system via UEFI, unlocks the disk, logs in and checks it
+#   5. Adds the archopen / archclose / archuninstall / archseal aliases to ~/.zshrc
 #
-# On the first `archopen`, log in as root (password: root). The first-boot
-# wizard then creates your user, sets up sudo and zsh, and locks root.
+# Every `archopen` first checks the VM files against the seal kept in the macOS
+# Keychain and refuses to boot if one of them changed. Then it asks for the
+# disk passphrase; log in as root (password: root) the first time. The
+# first-boot wizard then creates your user, sets up sudo and zsh, and locks root.
 #
 # Usage:
 #   bash archopen-setup.sh
-#   bash <(curl -fsSL https://raw.githubusercontent.com/arifcinartekin/archsetupformac/main/archopen-setup.sh)
+#   bash <(curl -fsSL https://arch.arifcinartekin.me/install)
 #
 # Environment variables (all optional):
 #   ARCHOPEN_DIR=~/vm/archarm   Install directory
@@ -31,6 +35,7 @@
 #   ARCHOPEN_PIN_BREW=1         brew pin qemu gnupg (keep brew upgrade away from them)
 #   ARCHOPEN_CPUS=4  ARCHOPEN_MEM=4G  ARCHOPEN_ROOT_SIZE=20G  ARCHOPEN_ESP_SIZE=1G
 #   ARCHOPEN_SSH_PORT=2222
+#   ARCHOPEN_LUKS_PASSPHRASE=...  Disk passphrase (otherwise asked for; needed with ARCHOPEN_YES=1 without a terminal)
 #   ARCHOPEN_REPO=owner/name  ARCHOPEN_REF=main   Where companion files are fetched from
 #   ARCHOPEN_ARCH_TARBALL_URL=... ARCH_TARBALL_SHA256=...   Use a different tarball
 #
@@ -99,6 +104,7 @@ FW_VARS=""
 QEMU_BIN=""
 ARCH_SHA256=""
 HAS_TERMINFO=0
+LUKS_PW=""
 BREW_INSTALLED_BY_US=0
 FORMULAE_INSTALLED_BY_US=""
 
@@ -291,11 +297,14 @@ confirm_plan() {
 
   Install directory : $INSTALL_DIR
   Virtual machine   : ${CPUS} CPUs, ${MEM} RAM, ${ROOT_SIZE} root disk, ${ESP_SIZE} ESP
+  Root disk         : LUKS2 encrypted, btrfs (subvolumes @, @home, @log, @pkg)
+  Integrity seal    : VM files checked before every boot, seal in the macOS Keychain
   Hostname          : ${ARCH_HOSTNAME}
   Alpine            : ${ALPINE_VERSION} (verified with sha256 + GPG)
   Arch Linux ARM    : ${ARCH_TARBALL} (verified with pinned sha256 + GPG)
   Will change       : brew packages (qemu, gnupg),
-                      ~/.zshrc (archopen, archclose, archuninstall aliases)
+                      ~/.zshrc (archopen, archclose, archuninstall, archseal aliases),
+                      login Keychain (one item: archopen-seal)
 
 EOF
   if [ "${ARCHOPEN_YES:-0}" = "1" ]; then
@@ -309,6 +318,43 @@ EOF
     ""|y|Y|yes|Yes) return 0 ;;
     *) die "Cancelled." ;;
   esac
+}
+
+# The LUKS passphrase never touches the disk or the log: the installer types it
+# into the Alpine VM over the serial console with echo off
+ask_passphrase() {
+  if [ -n "${ARCHOPEN_LUKS_PASSPHRASE:-}" ]; then
+    LUKS_PW="$ARCHOPEN_LUKS_PASSPHRASE"
+    # Not passed on to QEMU and the other tools started from here
+    unset ARCHOPEN_LUKS_PASSPHRASE
+  else
+    [ -r /dev/tty ] || die "No terminal to ask for the disk passphrase on: set ARCHOPEN_LUKS_PASSPHRASE."
+    local again
+    cat >/dev/tty <<'EOF'
+  The Arch disk is encrypted with LUKS2. You type this passphrase at every boot.
+  There is no way to recover the data without it.
+
+EOF
+    while :; do
+      printf 'Disk passphrase: ' >/dev/tty
+      IFS= read -rs LUKS_PW </dev/tty || die "Cancelled."
+      printf '\nRepeat passphrase: ' >/dev/tty
+      IFS= read -rs again </dev/tty || die "Cancelled."
+      printf '\n' >/dev/tty
+      if [ "$LUKS_PW" != "$again" ]; then
+        echo "  The passphrases do not match, try again." >/dev/tty
+      elif [ "${#LUKS_PW}" -lt 8 ]; then
+        echo "  Use at least 8 characters." >/dev/tty
+      else
+        break
+      fi
+    done
+  fi
+  # Control characters would be interpreted by the serial console instead of typed
+  case "$LUKS_PW" in
+    *[[:cntrl:]]*) die "The disk passphrase must not contain control characters." ;;
+  esac
+  [ -n "$LUKS_PW" ] || die "The disk passphrase is empty."
 }
 
 check_existing() {
@@ -360,7 +406,8 @@ fetch_companions() {
   repo_file third_party/zsh_setup/zsh_setup.sh "$WORK/zsh_setup.sh"
   repo_file mac/archclose.sh "$WORK/archclose.sh"
   repo_file mac/archuninstall.sh "$WORK/archuninstall.sh"
-  ok "first-boot wizard, zsh_setup.sh, archclose, archuninstall"
+  repo_file mac/archseal.sh "$WORK/archseal.sh"
+  ok "first-boot wizard, zsh_setup.sh, archclose, archuninstall, archseal"
 }
 
 ###############################################################################
@@ -423,11 +470,14 @@ get_arch() {
 ###############################################################################
 create_images() {
   log "Creating virtual disks"
-  rm -f "$INSTALL_DIR/disk.qcow2" "$INSTALL_DIR/efi.qcow2" "$INSTALL_DIR/vars.fd"
+  rm -f "$INSTALL_DIR/disk.qcow2" "$INSTALL_DIR/efi.qcow2" "$INSTALL_DIR/vars.fd" "$INSTALL_DIR/efi-code.fd"
   qemu-img create -q -f qcow2 "$INSTALL_DIR/disk.qcow2" "$ROOT_SIZE"
   qemu-img create -q -f qcow2 "$INSTALL_DIR/efi.qcow2" "$ESP_SIZE"
+  # The firmware is part of the boot chain the seal covers: use a private copy,
+  # so a `brew upgrade qemu` does not change it under the seal
+  cp "$FW_CODE" "$INSTALL_DIR/efi-code.fd"
   cp "$FW_VARS" "$INSTALL_DIR/vars.fd"
-  ok "disk.qcow2 ($ROOT_SIZE), efi.qcow2 ($ESP_SIZE), vars.fd"
+  ok "disk.qcow2 ($ROOT_SIZE), efi.qcow2 ($ESP_SIZE), efi-code.fd, vars.fd"
 }
 
 # terminfo source (infocmp -x output) of the Mac terminal, so the terminal also
@@ -471,7 +521,7 @@ write_installer_vm_script() { # output
     printf '#!/bin/bash\n'
     printf 'exec %q \\\n' "$QEMU_BIN"
     printf '  -machine virt,highmem=on -accel %q -cpu %q -smp %q -m %q \\\n' "$ACCEL" "$CPU_MODEL" "$CPUS" "$MEM"
-    printf '  -drive if=pflash,format=raw,readonly=on,file=%q \\\n' "$FW_CODE"
+    printf '  -drive if=pflash,format=raw,readonly=on,file=%q \\\n' "$INSTALL_DIR/efi-code.fd"
     printf '  -drive if=pflash,format=raw,file=%q \\\n' "$INSTALL_DIR/vars.fd"
     printf '  -drive if=none,id=root,file=%q,format=qcow2 \\\n' "$INSTALL_DIR/disk.qcow2"
     printf '  -device virtio-blk-pci,drive=root,serial=ARCHROOT \\\n'
@@ -495,10 +545,12 @@ step() { echo "ARCHOPEN_STEP: $*"; }
 die()  { echo "ARCHOPEN_ERROR: $*"; exit 1; }
 trap 'rc=$?; [ "$rc" -eq 0 ] || echo "ARCHOPEN_ERROR: guest script exited with code $rc"' EXIT
 
-: "${ROOT_UUID:?}" "${ESP_ID:?}" "${ESP_UUID:?}" "${FILES_URL:?}" "${TARBALL_SHA256:?}" "${ALPINE_SERIES:?}"
+: "${ROOT_UUID:?}" "${LUKS_UUID:?}" "${ESP_ID:?}" "${ESP_UUID:?}" "${FILES_URL:?}" "${TARBALL_SHA256:?}" "${ALPINE_SERIES:?}"
 : "${ARCH_HOSTNAME:?}" "${ROOT_PW:?}"
 HAS_TERMINFO="${HAS_TERMINFO:-0}"
 ESP_OPTS="rw,relatime,fmask=0077,dmask=0077,errors=remount-ro"
+BTRFS_OPTS="rw,noatime,compress=zstd:1"
+CRYPTDEV=/dev/mapper/cryptroot
 
 step "Installing Alpine tools"
 # http: packages are verified by apk signatures; avoids CA/clock issues on the live ISO
@@ -506,8 +558,9 @@ printf '%s\n' \
   "http://dl-cdn.alpinelinux.org/alpine/${ALPINE_SERIES}/main" \
   "http://dl-cdn.alpinelinux.org/alpine/${ALPINE_SERIES}/community" > /etc/apk/repositories
 apk update >/dev/null || die "apk update failed (internet access?)"
-apk add -q --no-progress e2fsprogs libarchive-tools curl sfdisk dosfstools || die "apk add failed"
-modprobe ext4 2>/dev/null || true
+apk add -q --no-progress btrfs-progs cryptsetup libarchive-tools curl sfdisk dosfstools || die "apk add failed"
+modprobe btrfs 2>/dev/null || true
+modprobe dm-crypt 2>/dev/null || true
 modprobe vfat 2>/dev/null || true
 
 find_disk() {
@@ -537,9 +590,31 @@ done
 [ -b "$ESPPART" ] || die "$ESPPART did not appear"
 mkfs.fat -F32 -n EFI -i "$ESP_ID" "$ESPPART" >/dev/null
 
-step "Formatting the root disk as ext4"
-mkfs.ext4 -q -F -L archroot -U "$ROOT_UUID" "$ROOTDEV"
-mount "$ROOTDEV" /mnt
+step "Encrypting the root disk with LUKS2 (argon2id)"
+# The Mac types the passphrase in with echo off, so it is not in the log
+stty -echo 2>/dev/null || true
+echo "ARCHOPEN_NEED_PASSPHRASE"
+IFS= read -r LUKS_PW || die "no passphrase received"
+stty echo 2>/dev/null || true
+[ -n "$LUKS_PW" ] || die "empty passphrase"
+# --key-file - takes the input as is: printf without a newline matches what is typed at boot
+printf '%s' "$LUKS_PW" | cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
+  --uuid "$LUKS_UUID" --label archcrypt --key-file - "$ROOTDEV" || die "cryptsetup luksFormat failed"
+printf '%s' "$LUKS_PW" | cryptsetup open --key-file - "$ROOTDEV" cryptroot || die "cryptsetup open failed"
+LUKS_PW=""
+
+step "Formatting the encrypted volume as btrfs (subvolumes @, @home, @log, @pkg)"
+mkfs.btrfs -q -f -L archroot -U "$ROOT_UUID" "$CRYPTDEV" >/dev/null
+mount "$CRYPTDEV" /mnt
+for sv in @ @home @log @pkg; do
+  btrfs subvolume create "/mnt/$sv" >/dev/null || die "could not create subvolume $sv"
+done
+umount /mnt
+mount -o "$BTRFS_OPTS,subvol=/@" "$CRYPTDEV" /mnt
+mkdir -p /mnt/home /mnt/var/log /mnt/var/cache/pacman/pkg
+mount -o "$BTRFS_OPTS,subvol=/@home" "$CRYPTDEV" /mnt/home
+mount -o "$BTRFS_OPTS,subvol=/@log" "$CRYPTDEV" /mnt/var/log
+mount -o "$BTRFS_OPTS,subvol=/@pkg" "$CRYPTDEV" /mnt/var/cache/pacman/pkg
 
 step "Fetching the Arch tarball from the Mac and verifying sha256"
 curl -fsS -o /tmp/arch.tar.gz "$FILES_URL/arch.tar.gz" || die "could not download the tarball"
@@ -562,7 +637,6 @@ umount /tmp/esp
 rm -rf /mnt/boot/*
 
 step "Preparing the chroot"
-mount --bind /mnt /mnt
 mount -t vfat -o "$ESP_OPTS" "$ESPPART" /mnt/boot
 mount -t proc proc /mnt/proc -o nosuid,noexec,nodev
 mount -t sysfs sys /mnt/sys -o nosuid,noexec,nodev,ro
@@ -582,7 +656,10 @@ cat > /mnt/etc/fstab <<FSTAB_EOF
 # See fstab(5) for details.
 
 # <file system> <dir> <type> <options> <dump> <pass>
-UUID=${ROOT_UUID}  /      ext4  rw,relatime  0 1
+UUID=${ROOT_UUID}  /                      btrfs  ${BTRFS_OPTS},subvol=/@     0 0
+UUID=${ROOT_UUID}  /home                  btrfs  ${BTRFS_OPTS},subvol=/@home  0 0
+UUID=${ROOT_UUID}  /var/log               btrfs  ${BTRFS_OPTS},subvol=/@log   0 0
+UUID=${ROOT_UUID}  /var/cache/pacman/pkg  btrfs  ${BTRFS_OPTS},subvol=/@pkg   0 0
 UUID=${ESP_UUID}  /boot  vfat  ${ESP_OPTS}  0 2
 FSTAB_EOF
 
@@ -614,7 +691,21 @@ step "Updating the keyring"
 pacman -Sy --noconfirm archlinuxarm-keyring
 
 step "Updating the system and installing packages (pacman -Su)"
-pacman -Su --noconfirm --needed sudo zsh git curl wget unzip fontconfig
+pacman -Su --noconfirm --needed sudo zsh git curl wget unzip fontconfig btrfs-progs cryptsetup
+
+step "Building the initramfs with LUKS unlock and btrfs"
+# busybox `encrypt` asks for the passphrase on the serial console. No
+# autodetect: it would pick modules for Alpine's running kernel, not Arch's.
+# No fsck: btrfs has none to run at boot.
+sed -i -e 's/^MODULES=.*/MODULES=(virtio_pci? virtio_blk? dm_crypt? btrfs?)/' \
+       -e 's/^HOOKS=.*/HOOKS=(base udev modconf block encrypt filesystems)/' /etc/mkinitcpio.conf
+grep -qx 'HOOKS=(base udev modconf block encrypt filesystems)' /etc/mkinitcpio.conf \
+  || { echo "ARCHOPEN_ERROR: could not set HOOKS in /etc/mkinitcpio.conf"; exit 1; }
+mkinitcpio -P
+# Into a file, not a pipe: grep -q would end lsinitcpio early, which pipefail counts as a failure
+lsinitcpio /boot/initramfs-linux.img > /tmp/initramfs.list
+grep -q 'bin/cryptsetup$' /tmp/initramfs.list \
+  || { echo "ARCHOPEN_ERROR: the initramfs has no cryptsetup, it could not unlock the disk"; exit 1; }
 
 step "Installing systemd-boot"
 bootctl install --esp-path=/boot --no-variables
@@ -629,7 +720,7 @@ cat > /boot/loader/entries/arch.conf <<ENTRY_EOF
 title   Arch Linux ARM
 linux   /Image
 initrd  /initramfs-linux.img
-options root=UUID=${ROOT_UUID} rw console=ttyAMA0 systemd.tty.term.ttyAMA0=xterm-256color
+options cryptdevice=UUID=${LUKS_UUID}:cryptroot root=/dev/mapper/cryptroot rootflags=subvol=@ rw console=ttyAMA0 systemd.tty.term.ttyAMA0=xterm-256color
 ENTRY_EOF
 systemctl enable systemd-boot-update.service || echo "warning: could not enable systemd-boot-update"
 
@@ -649,7 +740,7 @@ CHROOT_EOF
 
 chroot /mnt /usr/bin/env -i HOME=/root TERM=dumb LANG=C \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/bin \
-  ROOT_UUID="$ROOT_UUID" \
+  ROOT_UUID="$ROOT_UUID" LUKS_UUID="$LUKS_UUID" \
   /bin/bash /root/archopen-chroot.sh || die "installation inside the chroot failed"
 rm -f /mnt/root/archopen-chroot.sh /mnt/root/.archopen-pw /mnt/root/.archopen-terminfo
 
@@ -664,10 +755,12 @@ echo "ARCHOPEN_PKGLIST_END"
 step "Unmounting"
 killall gpg-agent dirmngr keyboxd scdaemon 2>/dev/null || true
 sync
-for m in /mnt/tmp /mnt/run /mnt/dev/shm /mnt/dev/pts /mnt/dev /mnt/sys /mnt/proc /mnt/boot /mnt /mnt; do
+for m in /mnt/tmp /mnt/run /mnt/dev/shm /mnt/dev/pts /mnt/dev /mnt/sys /mnt/proc /mnt/boot \
+         /mnt/var/cache/pacman/pkg /mnt/var/log /mnt/home /mnt; do
   umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
 done
 sync
+cryptsetup close cryptroot 2>/dev/null || true
 step "Alpine install stage done"
 GUEST_EOF
 }
@@ -689,6 +782,10 @@ proc die {msg} {
     puts stderr "\nERROR: $msg"
     exit 1
 }
+
+# Kept out of the environment of QEMU and everything else spawned from here
+set luks $env(ARCHOPEN_LUKS_PW)
+unset env(ARCHOPEN_LUKS_PW)
 
 spawn $env(ARCHOPEN_VM_SCRIPT)
 
@@ -734,7 +831,8 @@ if {[run "ip link set eth0 up && udhcpc -i eth0 -q -n >/dev/null 2>&1" 120] != 0
 if {[run "wget -q -O /tmp/guest.sh http://10.0.2.2:$env(ARCHOPEN_PORT)/guest-install.sh" 60] != 0} { die "could not fetch the guest script from the Mac" }
 
 # 2) The actual installation
-set vars "ROOT_UUID=$env(ARCHOPEN_ROOT_UUID) ESP_ID=$env(ARCHOPEN_ESP_ID) ESP_UUID=$env(ARCHOPEN_ESP_UUID)"
+set vars "ROOT_UUID=$env(ARCHOPEN_ROOT_UUID) LUKS_UUID=$env(ARCHOPEN_LUKS_UUID)"
+append vars " ESP_ID=$env(ARCHOPEN_ESP_ID) ESP_UUID=$env(ARCHOPEN_ESP_UUID)"
 append vars " FILES_URL=http://10.0.2.2:$env(ARCHOPEN_PORT) TARBALL_SHA256=$env(ARCHOPEN_TARBALL_SHA256)"
 append vars " ALPINE_SERIES=$env(ARCHOPEN_ALPINE_SERIES) ARCH_HOSTNAME=$env(ARCHOPEN_HOSTNAME)"
 append vars " HAS_TERMINFO=$env(ARCHOPEN_HAS_TERMINFO) ROOT_PW=$env(ARCHOPEN_ROOT_PW)"
@@ -749,6 +847,9 @@ expect {
         set cont 1
         if {[regexp {^ARCHOPEN_STEP: (.*)$} $line -> msg]} {
             puts "    - $msg"; flush stdout
+        } elseif {$line eq "ARCHOPEN_NEED_PASSPHRASE"} {
+            # The guest turned echo off before asking
+            send -- "$luks\r"
         } elseif {[regexp {^ARCHOPEN_ERROR: (.*)$} $line -> msg]} {
             set errmsg $msg
             puts stderr "    x $msg"; flush stderr
@@ -809,6 +910,7 @@ s.close()')"
   write_installer_expect "$WORK/installer.exp"
 
   ROOT_UUID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  LUKS_UUID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   ESP_ID="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
   ESP_UUID="${ESP_ID:0:4}-${ESP_ID:4:4}"
 
@@ -816,6 +918,8 @@ s.close()')"
   ARCHOPEN_VM_SCRIPT="$WORK/run-installer-vm.sh" \
   ARCHOPEN_PORT="$port" \
   ARCHOPEN_ROOT_UUID="$ROOT_UUID" \
+  ARCHOPEN_LUKS_UUID="$LUKS_UUID" \
+  ARCHOPEN_LUKS_PW="$LUKS_PW" \
   ARCHOPEN_ESP_ID="$ESP_ID" \
   ARCHOPEN_ESP_UUID="$ESP_UUID" \
   ARCHOPEN_TARBALL_SHA256="$ARCH_SHA256" \
@@ -851,11 +955,20 @@ write_start_script() {
     printf '  echo "The Arch VM is already running (pid $pid). Shut it down with: archclose" >&2\n'
     printf '  exit 1\n'
     printf 'fi\n'
+    printf '# Integrity check: if any VM file differs from the seal, QEMU is not started\n'
+    printf '# and the disk passphrase prompt never appears\n'
+    printf '"$DIR/archseal.sh" verify || exit 1\n'
+    printf 'echo "$$" > "$DIR/.archopen-session"\n'
     printf 'rm -f "$DIR/qmp.sock"\n'
-    printf 'exec %q \\\n' "$QEMU_BIN"
+    printf '# vars.fd stays as sealed: each boot gets a throwaway copy of the UEFI variables\n'
+    printf 'cp "$DIR/vars.fd" "$DIR/vars.run.fd" || exit 1\n'
+    printf '# Closing the terminal must not skip the reseal below; QEMU still gets the signal\n'
+    printf 'hup=""\n'
+    printf "trap 'hup=1' HUP TERM\n"
+    printf '%q \\\n' "$QEMU_BIN"
     printf '  -machine virt,highmem=on -accel %q -cpu %q -smp %q -m %q \\\n' "$ACCEL" "$CPU_MODEL" "$CPUS" "$MEM"
-    printf '  -drive if=pflash,format=raw,readonly=on,file=%q \\\n' "$FW_CODE"
-    printf '  -drive if=pflash,format=raw,file="$DIR/vars.fd" \\\n'
+    printf '  -drive if=pflash,format=raw,readonly=on,file="$DIR/efi-code.fd" \\\n'
+    printf '  -drive if=pflash,format=raw,file="$DIR/vars.run.fd" \\\n'
     printf '  -drive if=none,id=root,file="$DIR/disk.qcow2",format=qcow2 \\\n'
     printf '  -device virtio-blk-pci,drive=root \\\n'
     printf '  -drive if=none,id=esp,file="$DIR/efi.qcow2",format=qcow2 \\\n'
@@ -865,6 +978,17 @@ write_start_script() {
     printf '  -qmp "unix:$DIR/qmp.sock,server=on,wait=off" \\\n'
     printf '  -pidfile "$DIR/qemu.pid" \\\n'
     printf '  -nographic\n'
+    printf 'rc=$?\n'
+    printf 'rm -f "$DIR/vars.run.fd" "$DIR/qmp.sock" "$DIR/qemu.pid"\n'
+    printf '# What this session wrote (the disk, kernel updates on the ESP) is the new sealed state\n'
+    printf 'if [ -n "$hup" ]; then\n'
+    printf '  "$DIR/archseal.sh" update >/dev/null 2>&1 && rm -f "$DIR/.archopen-session"\n'
+    printf 'elif "$DIR/archseal.sh" update; then\n'
+    printf '  rm -f "$DIR/.archopen-session"\n'
+    printf 'else\n'
+    printf '  echo "Could not seal the VM files: the next archopen will refuse to boot until you run archseal accept" >&2\n'
+    printf 'fi\n'
+    printf 'exit "$rc"\n'
   } > "$out"
   chmod 755 "$out"
 }
@@ -872,8 +996,8 @@ write_start_script() {
 write_verify_expect() { # output
   cat > "$1" <<'EXP_EOF'
 #!/usr/bin/expect -f
-# Boots the new system via UEFI, logs in as root, checks a few things, enables
-# the first-boot wizard and shuts down.
+# Boots the new system through the launcher (seal check), unlocks the LUKS disk,
+# logs in as root, checks a few things, enables the first-boot wizard and shuts down.
 set timeout 30
 match_max 200000
 log_user 0
@@ -885,11 +1009,25 @@ proc die {msg} {
 }
 
 set pw $env(ARCHOPEN_PASSWORD)
+# Kept out of the environment of QEMU
+set luks $env(ARCHOPEN_LUKS_PW)
+unset env(ARCHOPEN_LUKS_PW)
 spawn $env(ARCHOPEN_START_SCRIPT)
 
 set nudges 0
 set logins 0
+set unlocks 0
 expect {
+    -re {INTEGRITY CHECK FAILED} { die "the launcher's integrity check failed (log: $env(ARCHOPEN_LOG))" }
+    -re {Enter passphrase for [^\r\n]*: $} {
+        incr unlocks
+        if {$unlocks > 3} { die "the LUKS passphrase was rejected" }
+        # cryptsetup prints the prompt before it turns echo off (and flushes the
+        # input): typed right away, the passphrase would be echoed into the log
+        sleep 1
+        send -- "$luks\r"
+        exp_continue
+    }
     -re {login: $} {
         incr logins
         if {$logins > 3} { die "Arch login failed (password rejected?)" }
@@ -914,18 +1052,22 @@ puts "    - Logged in"; flush stdout
 set timeout 60
 # Every field is followed by a fixed delimiter: output can arrive in pieces,
 # and an unterminated last group would match a partial value
-send -- "echo ARCHOPEN_\$((20+22))_\$(uname -r)_\$(findmnt -n -o SOURCE /boot)_\$(uname -n)_END\r"
+send -- "echo ARCHOPEN_\$((20+22))_\$(uname -r)_\$(findmnt -n -o SOURCE /boot)_\$(findmnt -n -o FSTYPE /)_\$(cryptsetup status cryptroot >/dev/null 2>&1 && echo luks || echo plain)_\$(uname -n)_END\r"
 expect {
-    -re {ARCHOPEN_42_([^_\r\n]+)_(/dev/[a-z0-9]+)_([A-Za-z0-9.-]+)_END} {
+    -re {ARCHOPEN_42_([^_\r\n]+)_(/dev/[a-z0-9]+)_([a-z0-9]+)_([a-z]+)_([A-Za-z0-9.-]+)_END} {
         set kver $expect_out(1,string)
         set bootdev $expect_out(2,string)
-        set host $expect_out(3,string)
+        set rootfs $expect_out(3,string)
+        set crypt $expect_out(4,string)
+        set host $expect_out(5,string)
     }
     timeout { die "could not read uname/findmnt output" }
     eof { die "QEMU exited" }
 }
-puts "    - Kernel: $kver, /boot: $bootdev, hostname: $host"; flush stdout
+puts "    - Kernel: $kver, /boot: $bootdev, root: $rootfs on $crypt, hostname: $host"; flush stdout
 if {$host ne $env(ARCHOPEN_HOSTNAME)} { die "hostname is '$host', expected '$env(ARCHOPEN_HOSTNAME)'" }
+if {$rootfs ne "btrfs"} { die "the root filesystem is '$rootfs', expected btrfs" }
+if {$crypt ne "luks"} { die "the root filesystem is not on the LUKS volume" }
 
 # sshd (key generation on first boot can take a while)
 set ssh_ok 0
@@ -972,29 +1114,37 @@ EXP_EOF
 }
 
 verify_boot() {
-  log "Booting the new system via UEFI and verifying it"
-  # Drop the NVRAM state left by the installer VM, start with a clean vars.fd
+  log "Sealing the VM files (seal stored in the login Keychain)"
+  # Drop the NVRAM state left by the installer VM: vars.fd is sealed as a clean
+  # template, and every boot runs on a throwaway copy of it
   cp "$FW_VARS" "$INSTALL_DIR/vars.fd"
   write_start_script
+  "$INSTALL_DIR/archseal.sh" update || die "Could not seal the VM files. Is the login Keychain unlocked?"
+
+  # The launcher checks the seal, boots, and seals again after the shutdown
+  log "Booting the new system via UEFI and verifying it"
   write_verify_expect "$WORK/verify.exp"
   ARCHOPEN_LOG="$LOG_FILE" \
   ARCHOPEN_START_SCRIPT="$INSTALL_DIR/start-uefi.sh" \
   ARCHOPEN_PASSWORD="$TEMP_ROOT_PASSWORD" \
+  ARCHOPEN_LUKS_PW="$LUKS_PW" \
   ARCHOPEN_HOSTNAME="$ARCH_HOSTNAME" \
   ARCHOPEN_SSH_PORT="$SSH_PORT" \
   ARCHOPEN_WORK="$WORK" \
   ARCHOPEN_BOOT_NUDGES="${ARCHOPEN_BOOT_NUDGES:-40}" \
     expect -f "$WORK/verify.exp" || die "Verification boot failed. Log: $LOG_FILE"
-  # The verification boot may have written to NVRAM as well
-  cp "$FW_VARS" "$INSTALL_DIR/vars.fd"
-  rm -f "$INSTALL_DIR/qmp.sock" "$INSTALL_DIR/qemu.pid"
-  ok "System boots, login works, first-boot wizard armed, clean shutdown"
+  "$INSTALL_DIR/archseal.sh" verify >/dev/null || die "The VM files were not sealed after the verification boot."
+  ok "Seal checked, disk unlocked, login works, first-boot wizard armed, clean shutdown, sealed again"
 }
 
-install_commands() {
+# The Mac commands live next to the disks and are covered by the seal
+install_scripts() {
   install -m 755 "$WORK/archclose.sh" "$INSTALL_DIR/archclose.sh"
   install -m 755 "$WORK/archuninstall.sh" "$INSTALL_DIR/archuninstall.sh"
+  install -m 755 "$WORK/archseal.sh" "$INSTALL_DIR/archseal.sh"
+}
 
+install_aliases() {
   local rc="$HOME/.zshrc" begin="# >>> archopen >>>" end="# <<< archopen <<<"
   touch "$rc"
   if [ ! -f "$rc.archopen-backup" ]; then
@@ -1007,11 +1157,12 @@ install_commands() {
     printf 'alias archopen=%q\n' "$INSTALL_DIR/start-uefi.sh"
     printf 'alias archclose=%q\n' "$INSTALL_DIR/archclose.sh"
     printf 'alias archuninstall=%q\n' "$INSTALL_DIR/archuninstall.sh"
+    printf 'alias archseal=%q\n' "$INSTALL_DIR/archseal.sh"
     printf '%s\n' "$end"
   } >> "$tmp"
   cat "$tmp" > "$rc"
   # shellcheck disable=SC2088
-  ok "archopen, archclose, archuninstall added to ~/.zshrc (backup: $rc.archopen-backup)"
+  ok "archopen, archclose, archuninstall, archseal added to ~/.zshrc (backup: $rc.archopen-backup)"
 }
 
 write_lock() {
@@ -1026,6 +1177,7 @@ write_lock() {
     echo "hostname=$ARCH_HOSTNAME"
     echo "qemu=$("$QEMU_BIN" --version | head -n 1)"
     echo "root_uuid=$ROOT_UUID"
+    echo "root_fs=btrfs (subvolumes @ @home @log @pkg) on LUKS2 $LUKS_UUID"
     echo "esp_uuid=$ESP_UUID"
     echo
     echo "# Arch packages (pacman -Q)"
@@ -1038,13 +1190,14 @@ write_lock() {
 # MAIN
 ###############################################################################
 main() {
-  printf '\n\033[1marchopen setup\033[0m: Arch Linux ARM on macOS with QEMU\n'
+  printf '\n\033[1mArch Setup for Mac\033[0m: Arch Linux ARM on macOS with QEMU\n'
   check_platform
   check_existing
   log "Checking dependencies"
   ensure_deps
   find_firmware
   confirm_plan
+  ask_passphrase
   prepare_dirs
   write_manifest
   fetch_companions
@@ -1052,8 +1205,9 @@ main() {
   get_arch
   create_images
   run_installer
+  install_scripts
   verify_boot
-  install_commands
+  install_aliases
   write_lock
   rm -f "$INCOMPLETE_MARK"
 
@@ -1065,7 +1219,9 @@ main() {
       archopen        start Arch in this terminal
       archclose       shut Arch down cleanly (from another Mac terminal)
       archuninstall   remove what this setup installed, asking item by item
+      archseal        integrity seal of the VM files (archopen checks it before every boot)
 
+  Every boot      : the seal is checked, then Arch asks for the disk passphrase
   First login     : user root, password ${TEMP_ROOT_PASSWORD}
                     The first-boot wizard then creates your user, sets up sudo
                     and zsh, and locks the root account.
@@ -1080,6 +1236,7 @@ EOF
     IFS= read -r ans </dev/tty || ans="n"
     case "$ans" in
       ""|y|Y|yes|Yes)
+        LUKS_PW=""
         cleanup
         trap - EXIT
         exec "$INSTALL_DIR/start-uefi.sh" ;;

@@ -1,22 +1,23 @@
 #!/bin/bash
 #
-# archuninstall - removes what archopen-setup.sh installed on this Mac
+# archuninstall - removes what Arch Setup for Mac (archopen-setup.sh) installed on this Mac
 #
 # Asks about every item one by one (y/N), shows a summary, and only then
 # removes the items you said yes to. You can, for example, keep QEMU or keep
 # the virtual disk and remove everything else.
 #
-#   - Arch virtual disks (disk.qcow2, efi.qcow2, vars.fd): the Arch system and its files
+#   - Arch virtual disks (disk.qcow2, efi.qcow2, vars.fd, efi-code.fd): the Arch
+#     system and its files, and the VM's integrity seal in the login Keychain
 #   - Download cache and logs (Alpine ISO, Arch tarball, install.log, versions.lock)
-#   - Shell commands: archopen / archclose / archuninstall in ~/.zshrc (+ its backup)
+#   - Shell commands: archopen / archclose / archuninstall / archseal in ~/.zshrc (+ its backup)
 #   - SSH host key of the VM in ~/.ssh/known_hosts
 #   - Homebrew packages qemu and gnupg, then `brew autoremove`
-#   - Homebrew itself, only if archopen installed it
+#   - Homebrew itself, only if the setup installed it
 #
 # Usage:
 #   archuninstall          ask item by item
 #   archuninstall --all    remove everything without asking
-#   bash <(curl -fsSL https://raw.githubusercontent.com/arifcinartekin/archsetupformac/main/mac/archuninstall.sh)
+#   bash <(curl -fsSL https://arch.arifcinartekin.me/uninstall)
 #
 # Environment: ARCHOPEN_DIR (default: the directory of this script, else ~/vm/archarm)
 #
@@ -108,41 +109,41 @@ ask_all() {
   by_us=" $(manifest_get installed_formulae) "
 
   if [ -e "$INSTALL_DIR/disk.qcow2" ] || [ -e "$INSTALL_DIR/efi.qcow2" ]; then
-    ask "Delete the Arch virtual disks ($(size_of "$INSTALL_DIR"/*.qcow2) - the Arch system and ALL files in it)?" && RM_DISKS=1
+    ask "Delete the Arch virtual disks ($(size_of "$INSTALL_DIR"/*.qcow2) - the Arch system and ALL files in it) and their Keychain seal?" && RM_DISKS=1
   fi
   if [ -d "$INSTALL_DIR/downloads" ] || [ -f "$INSTALL_DIR/install.log" ]; then
     ask "Delete the download cache and logs ($(size_of "$INSTALL_DIR/downloads") - Alpine ISO, Arch tarball, install.log)?" && RM_CACHE=1
   fi
   if has_alias_block; then
-    ask "Remove the archopen / archclose / archuninstall commands from ~/.zshrc?" && RM_ALIASES=1
+    ask "Remove the archopen / archclose / archuninstall / archseal commands from ~/.zshrc?" && RM_ALIASES=1
   fi
   if [ -f "$HOME/.ssh/known_hosts" ] && ssh-keygen -F "[localhost]:$ssh_port" >/dev/null 2>&1; then
     ask "Remove the VM's SSH host key ([localhost]:$ssh_port) from ~/.ssh/known_hosts?" && RM_KNOWN_HOST=1
   fi
   if brew_has qemu; then
     note=""
-    case "$by_us" in *" qemu "*) ;; *) note=" (it was already installed before archopen)" ;; esac
+    case "$by_us" in *" qemu "*) ;; *) note=" (it was already installed before Arch Setup for Mac)" ;; esac
     ask "Uninstall QEMU (brew uninstall qemu)$note?" && RM_QEMU=1
   fi
   if brew_has gnupg; then
     note=""
-    case "$by_us" in *" gnupg "*) ;; *) note=" (it was already installed before archopen)" ;; esac
+    case "$by_us" in *" gnupg "*) ;; *) note=" (it was already installed before Arch Setup for Mac)" ;; esac
     ask "Uninstall GnuPG (brew uninstall gnupg)$note?" && RM_GNUPG=1
   fi
   if [ "$RM_QEMU" = 1 ] || [ "$RM_GNUPG" = 1 ]; then
     ask "Run 'brew autoremove' to drop dependencies nothing needs anymore?" && RM_AUTOREMOVE=1
   fi
   if [ "$(manifest_get installed_homebrew)" = 1 ] && command -v brew >/dev/null 2>&1; then
-    ask "Uninstall Homebrew itself (archopen installed it; removes ALL brew packages)?" && RM_BREW=1
+    ask "Uninstall Homebrew itself (Arch Setup for Mac installed it; removes ALL brew packages)?" && RM_BREW=1
   fi
   return 0
 }
 
 print_plan() {
   printf '\n%sWill remove:%s\n' "$C_B" "$C_0"
-  [ "$RM_DISKS" = 1 ]      && echo "  - virtual disks in $INSTALL_DIR"
+  [ "$RM_DISKS" = 1 ]      && echo "  - virtual disks in $INSTALL_DIR, their integrity seal in the Keychain"
   [ "$RM_CACHE" = 1 ]      && echo "  - download cache and logs in $INSTALL_DIR"
-  [ "$RM_ALIASES" = 1 ]    && echo "  - archopen / archclose / archuninstall from ~/.zshrc, ~/.zshrc.archopen-backup"
+  [ "$RM_ALIASES" = 1 ]    && echo "  - archopen / archclose / archuninstall / archseal from ~/.zshrc, ~/.zshrc.archopen-backup"
   [ "$RM_KNOWN_HOST" = 1 ] && echo "  - VM SSH host key from ~/.ssh/known_hosts"
   [ "$RM_QEMU" = 1 ]       && echo "  - brew: qemu"
   [ "$RM_GNUPG" = 1 ]      && echo "  - brew: gnupg"
@@ -166,8 +167,32 @@ stop_leftovers() {
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     ok "stopped QEMU (pid $pid)"
   done
+  # After QEMU exits, the launcher seals the disks again: let it finish, so it
+  # does not write a new seal while the disks are being removed
+  pid="$(cat "$INSTALL_DIR/.archopen-session" 2>/dev/null || true)"
+  tries=0
+  while [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -qF start-uefi.sh && [ "$tries" -lt 60 ]; do
+    sleep 1
+    tries=$((tries + 1))
+  done
   # Leftover local HTTP server of an interrupted install
   pkill -f "http.server.*/archopen\.[A-Za-z0-9]+/stage" 2>/dev/null && ok "stopped a leftover installer HTTP server" || true
+}
+
+# Finder leaves a .DS_Store in every folder it has shown, which kept rmdir
+# from removing the parent of the install directory (~/vm)
+remove_parent_dir() {
+  local parent
+  parent="$(dirname "$INSTALL_DIR")"
+  # Only the default parent, which the setup created; never a folder you chose
+  [ "$parent" = "$HOME/vm" ] || return 0
+  [ -d "$parent" ] || return 0
+  rm -f "$parent/.DS_Store"
+  if rmdir "$parent" 2>/dev/null; then
+    ok "$parent removed"
+  else
+    echo "  $parent is kept: it has other files in it"
+  fi
 }
 
 remove_alias_block() {
@@ -185,8 +210,14 @@ do_remove() {
 
   if [ "$RM_DISKS" = 1 ]; then
     rm -f "$INSTALL_DIR/disk.qcow2" "$INSTALL_DIR/efi.qcow2" "$INSTALL_DIR/vars.fd" \
-          "$INSTALL_DIR/qmp.sock" "$INSTALL_DIR/qemu.pid" "$INSTALL_DIR/.archopen-incomplete"
+          "$INSTALL_DIR/efi-code.fd" "$INSTALL_DIR/vars.run.fd" \
+          "$INSTALL_DIR/qmp.sock" "$INSTALL_DIR/qemu.pid" "$INSTALL_DIR/.archopen-incomplete" \
+          "$INSTALL_DIR/.archopen-seal" "$INSTALL_DIR/.archopen-session"
     ok "virtual disks deleted"
+    if command -v security >/dev/null 2>&1 \
+       && security delete-generic-password -s archopen-seal -a "$INSTALL_DIR" >/dev/null 2>&1; then
+      ok "integrity seal removed from the Keychain"
+    fi
   fi
   if [ "$RM_CACHE" = 1 ]; then
     rm -rf "$INSTALL_DIR/downloads"
@@ -223,11 +254,13 @@ do_remove() {
       || warn "Homebrew uninstall did not finish"
   fi
 
-  # With disks, cache and commands gone, nothing of the install is left: remove the directory
-  if [ "$RM_DISKS" = 1 ] && [ "$RM_CACHE" = 1 ] && { [ "$RM_ALIASES" = 1 ] || ! has_alias_block; }; then
+  # With disks, cache and commands gone, nothing of the install is left: remove
+  # the directory. The cache counts as gone when it was never there to ask about.
+  if [ "$RM_DISKS" = 1 ] && [ ! -e "$INSTALL_DIR/downloads" ] && [ ! -e "$INSTALL_DIR/install.log" ] \
+     && ! has_alias_block; then
     rm -rf "$INSTALL_DIR"
-    rmdir "$(dirname "$INSTALL_DIR")" 2>/dev/null || true
     ok "$INSTALL_DIR removed"
+    remove_parent_dir
   elif [ "$RM_DISKS" = 1 ] && [ "$RM_ALIASES" != 1 ]; then
     warn "the disks are gone, so 'archopen' will not work until you run the setup again"
   elif [ "$RM_DISKS" != 1 ] && [ "$RM_ALIASES" = 1 ]; then
@@ -239,7 +272,7 @@ main() {
   case "${1:-}" in
     "")        ;;
     --all|-y)  ALL=1 ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         die "unknown option: $1 (help: --help)" ;;
   esac
   [ "$(uname -s)" = "Darwin" ] || die "archuninstall runs on macOS."
@@ -252,7 +285,7 @@ main() {
     eval "$(/opt/homebrew/bin/brew shellenv)"
   fi
 
-  printf '\n%sarchuninstall%s: removing archopen from this Mac (%s)\n\n' "$C_B" "$C_0" "$INSTALL_DIR"
+  printf '\n%sarchuninstall%s: removing Arch Setup for Mac from this Mac (%s)\n\n' "$C_B" "$C_0" "$INSTALL_DIR"
   ask_all
   if [ "$RM_DISKS$RM_CACHE$RM_ALIASES$RM_KNOWN_HOST$RM_QEMU$RM_GNUPG$RM_AUTOREMOVE$RM_BREW" = "00000000" ]; then
     echo "Nothing selected, nothing removed."
@@ -266,7 +299,7 @@ main() {
 
   printf '\n%sDone.%s\n' "$C_B" "$C_0"
   if [ "$RM_ALIASES" = 1 ]; then
-    echo "Open a new terminal (or run: unalias archopen archclose archuninstall) so the commands disappear from this one."
+    echo "Open a new terminal (or run: unalias archopen archclose archuninstall archseal) so the commands disappear from this one."
   fi
 }
 
