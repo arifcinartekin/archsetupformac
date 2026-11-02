@@ -46,7 +46,7 @@ KC=()
 [ -z "${ARCHSEAL_KEYCHAIN:-}" ] || KC=("$ARCHSEAL_KEYCHAIN")
 
 # Not sealed: written by the setup or while the VM runs, and never read at boot
-IGNORED=" downloads install.log versions.lock .archopen-manifest .archopen-seal .archopen-session .archopen-incomplete qmp.sock qemu.pid vars.run.fd .DS_Store "
+IGNORED=" downloads install.log versions.lock .archopen-manifest .archopen-seal .archopen-session .archopen-incomplete qmp.sock qemu.pid vars.run.fd winsize.in winsize.out .DS_Store "
 # A seal is only written when the whole boot chain is there
 REQUIRED="start-uefi.sh archseal.sh efi-code.fd vars.fd efi.qcow2 disk.qcow2"
 

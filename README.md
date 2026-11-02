@@ -34,13 +34,13 @@ When it finishes, it offers to start Arch right away. Enter the disk passphrase,
 
 | Command | Where | What it does |
 |---|---|---|
-| `archopen` | Mac | Checks the VM files against the integrity seal, then boots Arch in the current terminal (serial console, no window). Refuses to boot if a file changed |
+| `archopen` | Mac | Checks the VM files against the integrity seal, then boots Arch in the current terminal (serial console, no window). Resizing the terminal window resizes the console inside Arch too. Refuses to boot if a file changed |
 | `archclose` | Mac | Shuts Arch down cleanly from another terminal: presses the VM's power button, falls back to a hard stop after 90 s. `archclose --force` stops it immediately |
 | `archuninstall` | Mac | Removes what the setup installed. Asks about each item separately, so you can keep QEMU or the VM disk and remove the rest |
 | `archseal verify` / `archseal accept` | Mac | Checks the seal by hand / shows what changed and seals the current state after you confirm |
 | `ssh -p 2222 <user>@localhost` | Mac | SSH into the running VM (bound to `127.0.0.1` only) |
 
-Inside the VM, `sudo poweroff` works too, and so does <kbd>Ctrl</kbd>+<kbd>A</kbd> then <kbd>X</kbd> (instant hard stop).
+Inside the VM, `sudo poweroff` works too, and so does <kbd>Ctrl</kbd>+<kbd>A</kbd> then <kbd>X</kbd> (instant hard stop). <kbd>Ctrl</kbd>+<kbd>C</kbd> goes to the program running inside Arch, as in any terminal; it does not stop the VM.
 
 ---
 
@@ -75,10 +75,11 @@ On the first `archopen`, log in as `root` / `root`. A one-time wizard starts and
 
 1. asks for your **username** (default `user`) and password, and adds you to `wheel` with **sudo**
 2. optionally runs [**zsh_setup**](https://github.com/arifcinartekin/zsh_setup) for you: zsh, Oh My Zsh, Powerlevel10k, autosuggestions, syntax highlighting. The p10k configuration wizard runs at the end
-3. optionally installs **htop**, and **fastfetch** with an `info` command. fastfetch also runs at every login, so you see the system info each time you `archopen`
-4. optionally removes the default `alarm` account (its password is publicly known: `alarm`)
-5. **locks the root password**, but only after it has verified that your sudo works, so you can't lock yourself out
-6. removes itself and logs you out. From then on, log in as your own user and use `sudo -i` for root.
+3. optionally installs **htop**, **fastfetch** with an `info` command, and [**lsd**](https://github.com/lsd-rs/lsd) (`ls` with colors and icons). fastfetch also runs at every login, so you see the system info each time you `archopen`. With lsd, `ls`, `ll`, `la` and `lt` (tree) use it
+4. optionally sets up [**ly**](https://github.com/fairyglade/ly) as the login screen on the console (big clock, user and session picker; <kbd>F1</kbd> shuts down, <kbd>F2</kbd> reboots)
+5. optionally removes the default `alarm` account (its password is publicly known: `alarm`)
+6. **locks the root password**, but only after it has verified that your sudo works, so you can't lock yourself out
+7. removes itself and logs you out, onto the ly login screen if you chose it. From then on, log in as your own user and use `sudo -i` for root.
 
 Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to skip it. It runs again at the next root login.
 
@@ -193,7 +194,8 @@ Needs `gh` (logged in with push access) and `gpg`. Bump Alpine the same way: edi
 
 ```
 archopen-setup.sh                   Mac: the installer (the one-liner runs this)
-guest/archopen-firstboot.sh         VM:  first-boot wizard (user, sudo, zsh, root lock)
+guest/archopen-firstboot.sh         VM:  first-boot wizard (user, sudo, zsh, tools, login screen, root lock)
+guest/archopen-winsize.sh           VM:  applies the Mac terminal's size to the serial console
 mac/archclose.sh                    Mac: `archclose`
 mac/archuninstall.sh                Mac: `archuninstall`
 mac/archseal.sh                     Mac: `archseal`, the integrity seal `archopen` checks
@@ -220,8 +222,11 @@ Files on your Mac after install (`~/vm/archarm`): `disk.qcow2`, `efi.qcow2`, `va
 | `The Arch VM is already running` | It's open in another terminal. `archclose` |
 | `archclose` says *no QMP socket* | The VM was started by a launcher from an older version: `archclose --force`, or reinstall |
 | SSH: `REMOTE HOST IDENTIFICATION HAS CHANGED` | You reinstalled: `ssh-keygen -R "[localhost]:2222"` |
+| Plain console login instead of ly (or back) | `sudo archopen-firstboot --login-screen console` (or `ly`) |
+| Text stays at the old size after resizing the window | The VM was started by a launcher from an older version: reinstall. Inside Arch, `systemctl status archopen-winsize` shows whether the size helper runs |
 | Locked out of root | `sudo passwd root` as your user |
 | Skipped zsh setup | As your user: `sh /usr/local/share/archopen/zsh_setup.sh` |
+| Plain `ls` instead of lsd | Remove the `archopen lsd` block from `~/.zshrc` (bash: `~/.bashrc`), or run `\ls` once |
 | No fastfetch at login | Remove the `archopen info` block from `~/.zprofile` (bash: `~/.bash_profile`). The `info` alias is in `~/.zshrc` (bash: `~/.bashrc`) |
 
 ---

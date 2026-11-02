@@ -7,11 +7,12 @@
 #
 #   1) Creates your user, adds it to wheel and grants sudo
 #   2) Optionally runs zsh_setup.sh for that user (zsh, Oh My Zsh, Powerlevel10k)
-#   3) Optionally installs htop, and fastfetch with an `info` alias that also
-#      runs at every login
-#   4) Optionally removes the default `alarm` account (password: alarm)
-#   5) LOCKS the root password (passwd -l), only once sudo is verified
-#   6) Removes its own login hook
+#   3) Optionally installs htop, fastfetch with an `info` alias that also
+#      runs at every login, and lsd (ls, ll, la, lt use it)
+#   4) Optionally sets up the ly login screen on the console
+#   5) Optionally removes the default `alarm` account (password: alarm)
+#   6) LOCKS the root password (passwd -l), only once sudo is verified
+#   7) Removes its own login hook
 #
 # Ctrl+C aborts without changes to the hook; it runs again at the next root login.
 #
@@ -19,6 +20,8 @@
 #   archopen-firstboot              run the wizard
 #   archopen-firstboot --enable     run it at the next interactive root login
 #   archopen-firstboot --disable    do not run it at login anymore
+#   archopen-firstboot --login-screen ly|console
+#                                   ly login screen, or the plain console login
 #
 set -euo pipefail
 
@@ -27,14 +30,22 @@ HOOK_BEGIN="# >>> archopen firstboot >>>"
 HOOK_END="# <<< archopen firstboot <<<"
 INFO_BEGIN="# >>> archopen info >>>"
 INFO_END="# <<< archopen info <<<"
+LSD_BEGIN="# >>> archopen lsd >>>"
+LSD_END="# <<< archopen lsd <<<"
 ZSH_SETUP="/usr/local/share/archopen/zsh_setup.sh"
 TEMP_SUDOERS="/etc/sudoers.d/99-archopen-firstboot"
 SSH_PORT="${ARCHOPEN_SSH_PORT:-2222}"
+# The serial console the Mac terminal is attached to (console=ttyAMA0)
+CONSOLE_TTY="ttyAMA0"
+LY_CONFIG="/etc/ly/config.ini"
+SHELL_SESSION="/usr/local/bin/archopen-shell-session"
 
 NEW_USER=""
 DO_ZSH=1
 DO_HTOP=1
 DO_FASTFETCH=1
+DO_LSD=1
+DO_LY=1
 REMOVE_ALARM=0
 
 if [ -t 1 ]; then
@@ -126,6 +137,8 @@ ask_questions() {
 
   ask_yes_no "Install htop (interactive process viewer)?" y && DO_HTOP=1 || DO_HTOP=0
   ask_yes_no "Install fastfetch (system info, 'info' command, shown at every login)?" y && DO_FASTFETCH=1 || DO_FASTFETCH=0
+  ask_yes_no "Install lsd (ls with colors and icons; ls, ll, la, lt use it)?" y && DO_LSD=1 || DO_LSD=0
+  ask_yes_no "Use the ly login screen instead of the plain console login?" y && DO_LY=1 || DO_LY=0
 
   if [ "$NEW_USER" != "alarm" ] && id alarm >/dev/null 2>&1; then
     ask_yes_no "Remove the default 'alarm' account (its password is 'alarm')?" y && REMOVE_ALARM=1 || REMOVE_ALARM=0
@@ -211,6 +224,8 @@ install_tools() {
   local pkgs=()
   [ "$DO_HTOP" = 1 ] && pkgs+=(htop)
   [ "$DO_FASTFETCH" = 1 ] && pkgs+=(fastfetch)
+  [ "$DO_LSD" = 1 ] && pkgs+=(lsd)
+  [ "$DO_LY" = 1 ] && pkgs+=(ly)
   [ "${#pkgs[@]}" -gt 0 ] || return 0
   log "Packages: ${pkgs[*]}"
   if pacman -Syu --needed --noconfirm "${pkgs[@]}"; then
@@ -220,34 +235,150 @@ install_tools() {
   fi
 }
 
-# append_block <file> <text>: replaces the archopen info block in a file of the new user
+# append_block <file> <begin> <end> <text>: replaces that archopen block in a file of the new user
 append_block() {
-  local file="$1" tmp
+  local file="$1" begin="$2" end="$3" tmp
   tmp="$(mktemp)"
   if [ -f "$file" ]; then
-    awk -v b="$INFO_BEGIN" -v e="$INFO_END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$file" > "$tmp"
+    awk -v b="$begin" -v e="$end" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$file" > "$tmp"
   fi
-  printf '%s\n%s\n%s\n' "$INFO_BEGIN" "$2" "$INFO_END" >> "$tmp"
+  printf '%s\n%s\n%s\n' "$begin" "$4" "$end" >> "$tmp"
   install -m 0644 -o "$NEW_USER" -g "$(id -gn "$NEW_USER")" "$tmp" "$file"
   rm -f "$tmp"
+}
+
+# user_rc_files: sets USER_RC and USER_PROFILE for the new user's login shell
+user_rc_files() {
+  local home
+  home="$(getent passwd "$NEW_USER" | cut -d: -f6)"
+  if [ "$(getent passwd "$NEW_USER" | cut -d: -f7)" = /usr/bin/zsh ]; then
+    USER_RC="$home/.zshrc"
+    # .zprofile runs before .zshrc, so the output does not upset Powerlevel10k's instant prompt
+    USER_PROFILE="$home/.zprofile"
+  else
+    USER_RC="$home/.bashrc"
+    USER_PROFILE="$home/.bash_profile"
+  fi
 }
 
 setup_info() {
   [ "$DO_FASTFETCH" = 1 ] && command -v fastfetch >/dev/null 2>&1 || return 0
   log "'info' command"
-  local home rc profile
-  home="$(getent passwd "$NEW_USER" | cut -d: -f6)"
-  if [ "$(getent passwd "$NEW_USER" | cut -d: -f7)" = /usr/bin/zsh ]; then
-    rc="$home/.zshrc"
-    # .zprofile runs before .zshrc, so the output does not upset Powerlevel10k's instant prompt
-    profile="$home/.zprofile"
+  user_rc_files
+  append_block "$USER_RC" "$INFO_BEGIN" "$INFO_END" "alias info='fastfetch'"
+  append_block "$USER_PROFILE" "$INFO_BEGIN" "$INFO_END" \
+    '[ -t 1 ] && command -v fastfetch >/dev/null 2>&1 && fastfetch'
+  ok "'info' runs fastfetch; it also runs at every login ($(basename "$USER_PROFILE"))"
+}
+
+setup_lsd() {
+  [ "$DO_LSD" = 1 ] && command -v lsd >/dev/null 2>&1 || return 0
+  log "lsd aliases"
+  user_rc_files
+  # Appended after zsh_setup has written .zshrc, so these win over Oh My Zsh's ll/la
+  append_block "$USER_RC" "$LSD_BEGIN" "$LSD_END" "$(printf '%s\n' \
+    "alias ls='lsd'" \
+    "alias ll='lsd -l'" \
+    "alias la='lsd -la'" \
+    "alias lt='lsd --tree'")"
+  ok "ls, ll, la, lt use lsd ($(basename "$USER_RC"))"
+}
+
+# ----------------------------------------------------------------------------
+# Login screen (ly on the serial console)
+# ----------------------------------------------------------------------------
+
+# ly_set <option> <value>: one option of ly's config.ini
+ly_set() {
+  if grep -q "^$1 = " "$LY_CONFIG"; then
+    sed -i "s|^$1 = .*|$1 = $2|" "$LY_CONFIG"
   else
-    rc="$home/.bashrc"
-    profile="$home/.bash_profile"
+    warn "ly has no option '$1' (newer version?), skipped"
   fi
-  append_block "$rc" "alias info='fastfetch'"
-  append_block "$profile" '[ -t 1 ] && command -v fastfetch >/dev/null 2>&1 && fastfetch'
-  ok "'info' runs fastfetch; it also runs at every login ($(basename "$profile"))"
+}
+
+configure_ly() {
+  [ -f "$LY_CONFIG" ] || { warn "$LY_CONFIG not found, is ly installed?"; return 1; }
+  # A serial line has no keyboard LEDs and no backlight; there is no X server
+  ly_set hide_keyboard_locks true
+  ly_set brightness_down_key null
+  ly_set brightness_up_key null
+  ly_set xinitrc null
+  ly_set clock '%a %d %b  %H:%M'
+  ly_set bigclock en
+  # ly would send the shell's output to this log instead of the terminal
+  ly_set session_log null
+
+  # The session to log into: your login shell, in this terminal
+  cat > "$SHELL_SESSION" <<'SESSION_EOF'
+#!/bin/sh
+# Shell session for ly on the serial console (archopen). ly sends a session's
+# output to a log file, which suits graphical sessions; a shell needs the terminal.
+exec >/dev/tty 2>&1
+printf '\033[H\033[2J'
+exec "${SHELL:-/bin/bash}" -l
+SESSION_EOF
+  chmod 755 "$SHELL_SESSION"
+  mkdir -p /etc/ly/custom-sessions
+  cat > /etc/ly/custom-sessions/shell.desktop <<SESSION_EOF
+[Desktop Entry]
+Name=Shell
+Comment=Your login shell in this terminal
+Exec=$SHELL_SESSION
+Type=Application
+SESSION_EOF
+}
+
+# login_screen ly|console: what greets you on the console from the next boot on
+login_screen() {
+  case "$1" in
+    ly)
+      command -v ly-dm >/dev/null 2>&1 || pacman -S --needed --noconfirm ly
+      configure_ly || return 1
+      # The console getty comes from a generator (console=ttyAMA0): mask, not disable
+      systemctl enable "ly@$CONSOLE_TTY.service" >/dev/null 2>&1 || return 1
+      systemctl mask "serial-getty@$CONSOLE_TTY.service" >/dev/null 2>&1 \
+        || { systemctl disable "ly@$CONSOLE_TTY.service" >/dev/null 2>&1; return 1; }
+      ;;
+    console)
+      systemctl disable "ly@$CONSOLE_TTY.service" >/dev/null 2>&1 || true
+      systemctl unmask "serial-getty@$CONSOLE_TTY.service" >/dev/null 2>&1 || die "could not unmask serial-getty@$CONSOLE_TTY"
+      ;;
+    *) die "usage: archopen-firstboot --login-screen ly|console" ;;
+  esac
+}
+
+# Swaps the console over right away. This ends the session on the console, so
+# it runs outside it, from systemd
+switch_console() { # ly|console
+  local stop="ly@$CONSOLE_TTY.service" start="serial-getty@$CONSOLE_TTY.service"
+  if [ "$1" = ly ]; then
+    stop="serial-getty@$CONSOLE_TTY.service" start="ly@$CONSOLE_TTY.service"
+  fi
+  systemd-run --quiet --no-block --collect /bin/sh -c "sleep 1; systemctl stop $stop; systemctl start $start" >/dev/null
+}
+
+setup_login_screen() {
+  [ "$DO_LY" = 1 ] || return 0
+  log "Login screen"
+  if login_screen ly; then
+    LY_OK=1
+    ok "ly greets you on the console from now on (back to the plain login: sudo archopen-firstboot --login-screen console)"
+  else
+    warn "ly could not be set up; the plain console login stays"
+  fi
+}
+
+set_login_screen() { # ly|console, from the command line
+  [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
+  login_screen "$1"
+  if [ -t 0 ] && [ "$(tty 2>/dev/null)" = "/dev/$CONSOLE_TTY" ]; then
+    echo "Login screen: $1, from the next boot on."
+    ask_yes_no "Switch the console now? This ends this console session." n && switch_console "$1"
+  else
+    switch_console "$1"
+    echo "Login screen: $1. The console has switched over."
+  fi
 }
 
 remove_alarm() {
@@ -286,12 +417,15 @@ run_wizard() {
   printf 'Press Ctrl+C to skip it for now.\n\n'
 
   SUDO_OK=0
+  LY_OK=0
   ask_questions
   create_user
   setup_sudo
   install_tools
   run_zsh_setup
   setup_info
+  setup_lsd
+  setup_login_screen
   remove_alarm
   lock_root
   remove_hook
@@ -299,14 +433,21 @@ run_wizard() {
   printf '\n%sDone.%s Log in as %s%s%s from now on.\n' "$C_B" "$C_0" "$C_B" "$NEW_USER" "$C_0"
   printf '  SSH from the Mac : ssh -p %s %s@localhost\n' "$SSH_PORT" "$NEW_USER"
   printf '  Shut down       : archclose (on the Mac) or sudo poweroff\n\n'
-  printf 'Press Enter to log out. '
-  IFS= read -r _ || true
+  if [ "$LY_OK" = 1 ]; then
+    printf 'Press Enter to go to the login screen. '
+    IFS= read -r _ || true
+    switch_console ly
+  else
+    printf 'Press Enter to log out. '
+    IFS= read -r _ || true
+  fi
 }
 
 case "${1:-}" in
   --enable)  enable_hook ;;
   --disable) remove_hook ;;
+  --login-screen) set_login_screen "${2:-}" ;;
   "")        run_wizard ;;
-  -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
   *)         die "unknown option: $1 (help: --help)" ;;
 esac
