@@ -38,6 +38,7 @@
 #   ARCHOPEN_LUKS_PASSPHRASE=...  Disk passphrase (otherwise asked for; needed with ARCHOPEN_YES=1 without a terminal)
 #   ARCHOPEN_REPO=owner/name  ARCHOPEN_REF=main   Where companion files are fetched from
 #   ARCHOPEN_ARCH_TARBALL_URL=... ARCH_TARBALL_SHA256=...   Use a different tarball
+#   ARCHOPEN_ALPINE_MIRROR_URL=...   Where the Alpine ISO is fetched from first (default: this repo's GitHub release)
 #
 # For testing (non-macOS / no HVF): ARCHOPEN_ALLOW_NON_MAC=1 ARCHOPEN_ACCEL=tcg
 #   ARCHOPEN_CPU=cortex-a72 ARCHOPEN_FW_CODE=... ARCHOPEN_FW_VARS=...
@@ -54,8 +55,14 @@ RAW_BASE="https://raw.githubusercontent.com/${ARCHOPEN_REPO}/${ARCHOPEN_REF}"
 ALPINE_VERSION="3.24.3"
 ALPINE_SERIES="v${ALPINE_VERSION%.*}"
 ALPINE_ISO="alpine-virt-${ALPINE_VERSION}-aarch64.iso"
-ALPINE_BASE_URL="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_SERIES}/releases/aarch64"
 ALPINE_ISO_SHA256="e34603080e942e9ebc670689eee77dd7a6551c823a6ff5a299e308ded268098f"
+# The ISO is mirrored unchanged (with its upstream .sha256, .asc and the signing
+# key) as a GitHub release of this repo and fetched from there first; Alpine's
+# own servers are the fallback. The sha256 pin and the GPG signature by the
+# pinned fingerprint are what is trusted, wherever the files come from.
+ALPINE_RELEASE_TAG="alpine-${ALPINE_VERSION}"
+ALPINE_MIRROR_URL="${ARCHOPEN_ALPINE_MIRROR_URL:-https://github.com/${ARCHOPEN_REPO}/releases/download/${ALPINE_RELEASE_TAG}}"
+ALPINE_BASE_URL="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_SERIES}/releases/aarch64"
 ALPINE_KEY_URL="https://alpinelinux.org/keys/ncopa.asc"
 ALPINE_KEY_FPR="0482D84022F52DF1C4E7CD43293ACD0907D9495A"
 
@@ -417,14 +424,26 @@ fetch_companions() {
 get_alpine() {
   log "Downloading and verifying Alpine ${ALPINE_VERSION} (installer environment)"
   local iso="$DL_DIR/$ALPINE_ISO"
-  fetch "$ALPINE_BASE_URL/$ALPINE_ISO.sha256" "$iso.sha256"
-  fetch "$ALPINE_BASE_URL/$ALPINE_ISO.asc" "$iso.asc"
-  fetch "$ALPINE_KEY_URL" "$DL_DIR/alpine-ncopa.asc"
+  # Small files: upstream first (so they stay a second source), then the mirror
+  fetch "$ALPINE_BASE_URL/$ALPINE_ISO.sha256" "$iso.sha256" 2>/dev/null \
+    || fetch "$ALPINE_MIRROR_URL/$ALPINE_ISO.sha256" "$iso.sha256" \
+    || die "Could not download $ALPINE_ISO.sha256"
+  fetch "$ALPINE_BASE_URL/$ALPINE_ISO.asc" "$iso.asc" 2>/dev/null \
+    || fetch "$ALPINE_MIRROR_URL/$ALPINE_ISO.asc" "$iso.asc" \
+    || die "Could not download the Alpine ISO signature"
+  fetch "$ALPINE_KEY_URL" "$DL_DIR/alpine-ncopa.asc" 2>/dev/null \
+    || fetch "$ALPINE_MIRROR_URL/ncopa.asc" "$DL_DIR/alpine-ncopa.asc" \
+    || die "Could not download the Alpine signing key"
 
-  if [ ! -f "$iso" ] || [ "$(sha256_of "$iso")" != "$ALPINE_ISO_SHA256" ]; then
-    rm -f "$iso"
-    fetch_big "$ALPINE_BASE_URL/$ALPINE_ISO" "$iso"
-  fi
+  # The ISO: the mirror first, then Alpine's servers. A partial file from an
+  # interrupted run is resumed; a wrong file is downloaded again.
+  local base
+  for base in "$ALPINE_MIRROR_URL" "$ALPINE_MIRROR_URL" "$ALPINE_BASE_URL" "$ALPINE_BASE_URL"; do
+    [ "$(sha256_of "$iso" 2>/dev/null)" = "$ALPINE_ISO_SHA256" ] && break
+    fetch_big "$base/$ALPINE_ISO" "$iso" || true
+    [ "$(sha256_of "$iso" 2>/dev/null)" = "$ALPINE_ISO_SHA256" ] || rm -f "$iso"
+  done
+  [ -f "$iso" ] || die "Could not download $ALPINE_ISO with the pinned sha256."
 
   local got published
   got="$(sha256_of "$iso")"

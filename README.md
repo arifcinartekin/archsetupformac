@@ -171,13 +171,15 @@ ARCHOPEN_MEM=8G ARCHOPEN_ROOT_SIZE=64G bash <(curl -fsSL https://arch.arifcinart
 
 | | Source | Checks |
 |---|---|---|
-| Alpine `3.24.3` (installer only) | `dl-cdn.alpinelinux.org` | sha256 pinned in the script + GPG signature by fingerprint `0482D840…D9495A` |
+| Alpine `3.24.3` (installer only) | [GitHub release `alpine-3.24.3`](https://github.com/arifcinartekin/archsetupformac/releases/tag/alpine-3.24.3) of this repo (unmodified copy), then `dl-cdn.alpinelinux.org` | sha256 pinned in the script + GPG signature by fingerprint `0482D840…D9495A` |
 | Arch Linux ARM tarball | GitHub release of this repo (unmodified copy) | sha256 pinned in the script + **upstream** GPG signature by fingerprint `68B3537F…BDBE6A6` |
 | Companion scripts | this repo | fetched from the same repo and ref as the setup script |
 
 **Why mirror the tarball?** Upstream only publishes `ArchLinuxARM-aarch64-latest.tar.gz`, a moving target. A pinned checksum against it breaks whenever upstream rebuilds. The release asset is the same file, byte for byte, so the original Arch Linux ARM signature still verifies it. The ~830 MB file sits in GitHub Releases rather than in git: release assets can be up to 2 GB and have no bandwidth cap, while git rejects files over 100 MB.
 
 The installed system is not old: `pacman -Syu` runs during setup, so you boot into current packages. The tarball only fixes the starting point.
+
+The Alpine ISO is mirrored the same way (with its upstream `.sha256`, `.asc` and the signing key), so an install does not depend on Alpine's CDN keeping 3.24.3 around. The `.sha256`, signature and key are still fetched from Alpine first. The packages the installer VM adds with `apk` (cryptsetup, btrfs-progs, …) still come from Alpine's repositories.
 
 ### Updating the pinned tarball (maintainers)
 
@@ -186,7 +188,12 @@ tools/publish-tarball.sh            # download upstream latest, verify GPG, uplo
 git commit -am "Pin Arch Linux ARM tarball $(date +%Y%m%d)" && git push
 ```
 
-Needs `gh` (logged in with push access) and `gpg`. Bump Alpine the same way: edit `ALPINE_VERSION` and `ALPINE_ISO_SHA256`.
+Needs `gh` (logged in with push access) and `gpg`. To bump Alpine, edit `ALPINE_VERSION` and `ALPINE_ISO_SHA256` and publish the mirror:
+
+```bash
+gh release create alpine-<version> --latest=false --title "Alpine <version> aarch64 (installer environment)" \
+  alpine-virt-<version>-aarch64.iso{,.sha256,.asc} ncopa.asc
+```
 
 ---
 
