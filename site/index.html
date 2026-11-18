@@ -14,8 +14,18 @@
   main { max-width: 680px; margin: 0 auto; padding: 64px 16px; }
   h1 { margin: 0 0 4px; font-size: 32px; }
   p { color: var(--muted); }
-  pre { background: var(--code); padding: 14px 16px; border-radius: 8px;
+  .cmd { position: relative; margin: 1em 0; }
+  pre { background: var(--code); padding: 14px 52px 14px 16px; border-radius: 8px; margin: 0;
         overflow-x: auto; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .copy { position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+          width: 34px; height: 34px; display: grid; place-items: center;
+          background: transparent; border: 0; border-radius: 6px; cursor: pointer; color: var(--muted); }
+  .copy:hover { background: rgba(127,127,127,.15); color: var(--fg); }
+  .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .copy svg { width: 18px; height: 18px; }
+  .copy .ok { display: none; color: #30d158; }
+  .copy.done .ok { display: block; }
+  .copy.done .icon { display: none; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -24,10 +34,27 @@
   <h1>Arch Setup for Mac</h1>
   <p>Arch Linux ARM on Apple Silicon Macs, in one command: QEMU + HVF, LUKS2-encrypted btrfs, and an integrity seal checked before every boot.</p>
   <h2>Install</h2>
-  <pre>bash &lt;(curl -fsSL https://arch.arifcinartekin.me/install)</pre>
+  <div class="cmd"><pre>bash &lt;(curl -fsSL https://arch.arifcinartekin.me/install)</pre><button class="copy" type="button" aria-label="Copy command" title="Copy"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></button></div>
   <h2>Uninstall</h2>
-  <pre>bash &lt;(curl -fsSL https://arch.arifcinartekin.me/uninstall)</pre>
+  <div class="cmd"><pre>bash &lt;(curl -fsSL https://arch.arifcinartekin.me/uninstall)</pre><button class="copy" type="button" aria-label="Copy command" title="Copy"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></button></div>
   <p>Source, documentation and pinned versions: <a href="https://github.com/arifcinartekin/archsetupformac">github.com/arifcinartekin/archsetupformac</a></p>
 </main>
+<script>
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.parentNode.querySelector('pre').textContent;
+      var done = function () {
+        btn.classList.add('done'); btn.setAttribute('aria-label', 'Copied');
+        setTimeout(function () { btn.classList.remove('done'); btn.setAttribute('aria-label', 'Copy command'); }, 1500);
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done);
+      } else {
+        var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t);
+        t.select(); document.execCommand('copy'); t.remove(); done();
+      }
+    });
+  });
+</script>
 </body>
 </html>
