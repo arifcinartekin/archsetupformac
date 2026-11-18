@@ -30,6 +30,8 @@
   .copy.done .ok { display: block; }
   .copy.done .icon { display: none; }
   a { color: var(--accent); }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid rgba(127,127,127,.2);
+           font-size: 14px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -41,6 +43,7 @@
   <h2>Uninstall</h2>
   <div class="cmd"><pre>bash &lt;(curl -fsSL https://arch.arifcinartekin.me/uninstall)</pre><button class="copy" type="button" aria-label="Copy command" title="Copy"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></button></div>
   <p>Source, documentation and pinned versions: <a href="https://github.com/arifcinartekin/archsetupformac">github.com/arifcinartekin/archsetupformac</a></p>
+  <footer>Made by <a href="https://arifcinartekin.me">arifcinartekin.me</a></footer>
 </main>
 <script>
   document.querySelectorAll('.copy').forEach(function (btn) {
