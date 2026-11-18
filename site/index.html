@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Arch Setup for Mac</title>
+<link rel="icon" type="image/svg+xml" href="arch-logo.svg">
 <style>
   :root { --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --code: #f2f2f4; --accent: #1793d1; }
   @media (prefers-color-scheme: dark) {
@@ -12,7 +13,9 @@
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   main { max-width: 680px; margin: 0 auto; padding: 64px 16px; }
-  h1 { margin: 0 0 4px; font-size: 32px; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }
+  header img { width: 44px; height: 44px; flex: none; }
+  h1 { margin: 0; font-size: 32px; }
   p { color: var(--muted); }
   .cmd { position: relative; margin: 1em 0; }
   pre { background: var(--code); padding: 14px 52px 14px 16px; border-radius: 8px; margin: 0;
@@ -31,7 +34,7 @@
 </head>
 <body>
 <main>
-  <h1>Arch Setup for Mac</h1>
+  <header><img src="arch-logo.svg" alt="" width="44" height="44"><h1>Arch Setup for Mac</h1></header>
   <p>Arch Linux ARM on Apple Silicon Macs, in one command: QEMU + HVF, LUKS2-encrypted btrfs, and an integrity seal checked before every boot.</p>
   <h2>Install</h2>
   <div class="cmd"><pre>bash &lt;(curl -fsSL https://arch.arifcinartekin.me/install)</pre><button class="copy" type="button" aria-label="Copy command" title="Copy"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></button></div>

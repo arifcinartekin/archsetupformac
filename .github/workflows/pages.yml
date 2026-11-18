@@ -39,6 +39,7 @@ jobs:
         run: |
           mkdir -p _site
           cp site/index.html _site/index.html
+          cp site/arch-logo.svg _site/arch-logo.svg
           cp archopen-setup.sh _site/install
           cp mac/archuninstall.sh _site/uninstall
       - uses: actions/configure-pages@v5
