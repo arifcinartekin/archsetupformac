@@ -248,6 +248,9 @@ configure_ly() {
   ly_set bigclock en
   # ly would send the shell's output to this log instead of the terminal
   ly_set session_log null
+  # The user is already picked (there is one); start in the password field.
+  # With the default (login), the first password typed goes nowhere.
+  ly_set default_input password
 
   # A serial console has no size (0x0) until archopen-winsize hands it the
   # Mac terminal's, and ly aborts on a 0x0 screen. The size only sticks while

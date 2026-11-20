@@ -38,7 +38,7 @@ When it finishes, it offers to start Arch right away. Enter the disk passphrase,
 | `archclose` | Mac | Shuts Arch down cleanly from another terminal: presses the VM's power button, falls back to a hard stop after 90 s. `archclose --force` stops it immediately |
 | `archuninstall` | Mac | Removes what the setup installed. Asks about each item separately, so you can keep QEMU or the VM disk and remove the rest |
 | `archseal verify` / `archseal accept` | Mac | Checks the seal by hand / shows what changed and seals the current state after you confirm |
-| `ssh -p 2222 user@localhost` | Mac | SSH into the running VM (bound to `127.0.0.1` only) |
+| `ssh -p 2222 user@localhost` | Mac | SSH into the running VM (bound to `127.0.0.1` only). On your network the VM also has its own address, see [Network](#-network) |
 
 Inside the VM, `sudo poweroff` works too, and so does <kbd>Ctrl</kbd>+<kbd>A</kbd> then <kbd>X</kbd> (instant hard stop). <kbd>Ctrl</kbd>+<kbd>C</kbd> goes to the program running inside Arch, as in any terminal; it does not stop the VM.
 
@@ -95,6 +95,20 @@ Then it removes itself and logs you out, onto the ly login screen if you chose i
 
 ---
 
+## 🌐 Network
+
+The VM is **bridged** to your Mac's network: it gets its own address from your router (DHCP), like any other machine at home, so other devices can reach the services you run in it. Find the address inside the VM with `ip -4 addr show` (fastfetch shows it as *Local IP* too).
+
+How: macOS only lets root bridge a network card, and Homebrew's QEMU does not have Apple's entitlement for it. The setup installs [socket_vmnet](https://github.com/lima-vm/socket_vmnet) (from the Lima project) as a small root service, the way Lima recommends: binaries copied to `/opt/socket_vmnet` (owned by root, so the service never runs a file your user could replace) and a launchd job, `/Library/LaunchDaemons/io.github.lima-vm.socket_vmnet.bridged.en0.plist`. That is the one step that asks for your **Mac password**, once. QEMU itself keeps running as you. The same service serves BSD Setup for Mac and Debian Setup for Mac: whichever installs first sets it up, the others reuse it.
+
+The VM has a second network card on QEMU's NAT that only carries `ssh -p 2222 …@localhost` from the Mac (fixed address `10.0.2.15`, no default route). If the bridge service is not running, `archopen` says so and boots with the NAT alone, as before.
+
+- **Your network sees the VM.** SSH (and anything else you start) is reachable from your LAN, not only from the Mac. Use strong passwords, or SSH keys and `PasswordAuthentication no`
+- **Wi-Fi:** bridging works on Wi-Fi (`en0`), but some networks (company or hotel Wi-Fi, routers that limit devices per client) refuse the VM's extra address. Then the VM gets no address on that card; SSH on `127.0.0.1` still works. `ARCHOPEN_BRIDGE=0` installs without the bridge
+- The router sees the VM as its own device with a fixed MAC address (chosen at install), so it keeps getting the same address and you can reserve it there
+
+---
+
 ## 🔐 Encryption and the integrity seal
 
 **The disk.** The Arch root sits on a LUKS2 volume (aes-xts, argon2id) with btrfs inside it (`@` → `/`, `@home`, `@log` → `/var/log`, `@pkg` → `/var/cache/pacman/pkg`, zstd compression). The initramfs asks for the passphrase on the serial console at every boot. Without the passphrase, `disk.qcow2` is unreadable, whoever copies it.
@@ -136,6 +150,7 @@ It asks about each item (`y/N`), shows a summary, and asks once more before remo
 | Download cache and logs | Alpine ISO, Arch tarball, `install.log`, `versions.lock` |
 | Shell commands | The `archopen` block in `~/.zshrc` (all four commands) and `~/.zshrc.archopen-backup` |
 | SSH host key | `[localhost]:2222` in `~/.ssh/known_hosts`, if present |
+| Bridged-network service | `/opt/socket_vmnet` and its launchd job (asks for your Mac password); the other setups' VMs use it too and fall back to NAT without it. Also `brew uninstall socket_vmnet` |
 | QEMU, GnuPG | `brew uninstall`; tells you if they were already there before the setup |
 | `brew autoremove` | Only offered if you removed one of the above |
 | Homebrew | Only offered if the setup installed it |
@@ -162,6 +177,8 @@ All optional, set as environment variables in front of the install command:
 | `ARCHOPEN_ROOT_SIZE` / `ARCHOPEN_ESP_SIZE` | `20G` / `1G` | Disk sizes (thin-provisioned qcow2) |
 | `ARCHOPEN_USER` | `user` | Your account inside the VM (wheel, sudo) |
 | `ARCHOPEN_SSH_PORT` | `2222` | Host port forwarded to the VM's port 22 |
+| `ARCHOPEN_BRIDGE=0` | | No bridged network: NAT only, no socket_vmnet, no Mac password asked |
+| `ARCHOPEN_BRIDGE_IF` | interface of the default route (`en0`) | Mac network interface the VM is bridged to |
 | `ARCHOPEN_LUKS_PASSPHRASE` | | Disk passphrase, instead of asking for it (needed for an install without a terminal) |
 | `ARCHOPEN_YES=1` | | Do not ask for confirmation |
 | `ARCHOPEN_FORCE=1` | | Overwrite an existing install |
@@ -229,6 +246,8 @@ Files on your Mac after install (`~/vm/archarm`): `disk.qcow2`, `efi.qcow2`, `va
 
 | Problem | Fix |
 |---|---|
+| `Network: socket_vmnet is not running` at boot | `sudo launchctl kickstart -k system/io.github.lima-vm.socket_vmnet.bridged.en0`, then start the VM again. Log: `/var/log/socket_vmnet.bridged.en0.log` |
+| The VM has no address from the router | Inside the VM `ip -4 addr show`. The Wi-Fi may refuse extra devices (see [Network](#-network)); SSH on `127.0.0.1:2222` still works |
 | Install failed | Read `~/vm/archarm/install.log` with `less` or `cat -v` (plain `cat` lets your terminal answer the escape sequences recorded in it, which leaves junk at your prompt), then run the setup again. It resumes downloads and redoes the disk |
 | `There is already an install` | `archuninstall` first, or `ARCHOPEN_FORCE=1` |
 | `INTEGRITY CHECK FAILED` | Something changed a VM file while Arch was off. If you know why (the last session crashed, you restored a backup), `archseal accept`. If you don't, don't boot it |

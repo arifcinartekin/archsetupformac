@@ -11,6 +11,8 @@
 #   - Download cache and logs (Alpine ISO, Arch tarball, install.log, versions.lock)
 #   - Shell commands: archopen / archclose / archuninstall / archseal in ~/.zshrc (+ its backup)
 #   - SSH host key of the VM in ~/.ssh/known_hosts
+#   - The bridged-network service (socket_vmnet in /opt/socket_vmnet and its
+#     launchd job; shared with BSD and Debian Setup for Mac) and its brew package
 #   - Homebrew packages qemu and gnupg, then `brew autoremove`
 #   - Homebrew itself, only if the setup installed it
 #
@@ -53,7 +55,7 @@ MANIFEST="$INSTALL_DIR/.archopen-manifest"
 
 # Answers, filled in by ask_all
 RM_DISKS=0 RM_CACHE=0 RM_ALIASES=0 RM_KNOWN_HOST=0
-RM_QEMU=0 RM_GNUPG=0 RM_AUTOREMOVE=0 RM_BREW=0
+RM_QEMU=0 RM_GNUPG=0 RM_AUTOREMOVE=0 RM_BREW=0 RM_BRIDGE=0 RM_VMNET_PKG=0
 
 ask() { # question -> 0 for yes
   local ans
@@ -77,6 +79,21 @@ manifest_get() { # key
 }
 
 size_of() { du -shc "$@" 2>/dev/null | tail -n 1 | awk '{ print $1 }'; }
+
+# The bridged-network service the setups install (socket_vmnet, Lima's layout)
+bridge_plists() { ls /Library/LaunchDaemons/io.github.lima-vm.socket_vmnet.bridged.*.plist 2>/dev/null || true; }
+bridge_installed() { [ -n "$(bridge_plists)" ] || [ -d /opt/socket_vmnet ]; }
+
+remove_bridge() {
+  local p
+  log "Removing the bridged-network service (sudo)"
+  for p in $(bridge_plists); do
+    sudo launchctl bootout system "$p" 2>/dev/null || true
+    sudo rm -f "$p" && ok "removed $p"
+  done
+  sudo rm -rf /opt/socket_vmnet && ok "removed /opt/socket_vmnet"
+  sudo rm -f /private/var/run/socket_vmnet.bridged.* /var/log/socket_vmnet.bridged.*.log 2>/dev/null || true
+}
 
 has_alias_block() { [ -f "$ZSHRC" ] && grep -qxF "$ALIAS_BEGIN" "$ZSHRC"; }
 
@@ -120,6 +137,14 @@ ask_all() {
   if [ -f "$HOME/.ssh/known_hosts" ] && ssh-keygen -F "[localhost]:$ssh_port" >/dev/null 2>&1; then
     ask "Remove the VM's SSH host key ([localhost]:$ssh_port) from ~/.ssh/known_hosts?" && RM_KNOWN_HOST=1
   fi
+  if bridge_installed; then
+    ask "Remove the bridged-network service (socket_vmnet; BSD/Debian Setup for Mac VMs use it too and fall back to NAT without it; asks for your Mac password)?" && RM_BRIDGE=1
+  fi
+  if brew_has socket_vmnet; then
+    note=""
+    case "$by_us" in *" socket_vmnet "*) ;; *) note=" (it was already installed before Arch Setup for Mac)" ;; esac
+    ask "Uninstall socket_vmnet (brew uninstall socket_vmnet)$note?" && RM_VMNET_PKG=1
+  fi
   if brew_has qemu; then
     note=""
     case "$by_us" in *" qemu "*) ;; *) note=" (it was already installed before Arch Setup for Mac)" ;; esac
@@ -130,7 +155,7 @@ ask_all() {
     case "$by_us" in *" gnupg "*) ;; *) note=" (it was already installed before Arch Setup for Mac)" ;; esac
     ask "Uninstall GnuPG (brew uninstall gnupg)$note?" && RM_GNUPG=1
   fi
-  if [ "$RM_QEMU" = 1 ] || [ "$RM_GNUPG" = 1 ]; then
+  if [ "$RM_QEMU" = 1 ] || [ "$RM_GNUPG" = 1 ] || [ "$RM_VMNET_PKG" = 1 ]; then
     ask "Run 'brew autoremove' to drop dependencies nothing needs anymore?" && RM_AUTOREMOVE=1
   fi
   if [ "$(manifest_get installed_homebrew)" = 1 ] && command -v brew >/dev/null 2>&1; then
@@ -145,6 +170,8 @@ print_plan() {
   [ "$RM_CACHE" = 1 ]      && echo "  - download cache and logs in $INSTALL_DIR"
   [ "$RM_ALIASES" = 1 ]    && echo "  - archopen / archclose / archuninstall / archseal from ~/.zshrc, ~/.zshrc.archopen-backup"
   [ "$RM_KNOWN_HOST" = 1 ] && echo "  - VM SSH host key from ~/.ssh/known_hosts"
+  [ "$RM_BRIDGE" = 1 ]     && echo "  - bridged-network service: /opt/socket_vmnet and its launchd jobs (sudo)"
+  [ "$RM_VMNET_PKG" = 1 ]  && echo "  - brew: socket_vmnet"
   [ "$RM_QEMU" = 1 ]       && echo "  - brew: qemu"
   [ "$RM_GNUPG" = 1 ]      && echo "  - brew: gnupg"
   [ "$RM_AUTOREMOVE" = 1 ] && echo "  - brew autoremove"
@@ -234,9 +261,14 @@ do_remove() {
     ok "SSH host key removed"
   fi
 
+  if [ "$RM_BRIDGE" = 1 ]; then
+    remove_bridge
+  fi
+
   local f
-  for f in qemu gnupg; do
-    if { [ "$f" = qemu ] && [ "$RM_QEMU" = 1 ]; } || { [ "$f" = gnupg ] && [ "$RM_GNUPG" = 1 ]; }; then
+  for f in socket_vmnet qemu gnupg; do
+    if { [ "$f" = qemu ] && [ "$RM_QEMU" = 1 ]; } || { [ "$f" = gnupg ] && [ "$RM_GNUPG" = 1 ]; } \
+       || { [ "$f" = socket_vmnet ] && [ "$RM_VMNET_PKG" = 1 ]; }; then
       brew unpin "$f" >/dev/null 2>&1 || true
       if brew uninstall "$f"; then
         ok "$f uninstalled"
@@ -272,7 +304,7 @@ main() {
   case "${1:-}" in
     "")        ;;
     --all|-y)  ALL=1 ;;
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         die "unknown option: $1 (help: --help)" ;;
   esac
   [ "$(uname -s)" = "Darwin" ] || die "archuninstall runs on macOS."
@@ -287,7 +319,7 @@ main() {
 
   printf '\n%sarchuninstall%s: removing Arch Setup for Mac from this Mac (%s)\n\n' "$C_B" "$C_0" "$INSTALL_DIR"
   ask_all
-  if [ "$RM_DISKS$RM_CACHE$RM_ALIASES$RM_KNOWN_HOST$RM_QEMU$RM_GNUPG$RM_AUTOREMOVE$RM_BREW" = "00000000" ]; then
+  if [ "$RM_DISKS$RM_CACHE$RM_ALIASES$RM_KNOWN_HOST$RM_QEMU$RM_GNUPG$RM_AUTOREMOVE$RM_BREW$RM_BRIDGE$RM_VMNET_PKG" = "0000000000" ]; then
     echo "Nothing selected, nothing removed."
     exit 0
   fi
