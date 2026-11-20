@@ -1218,6 +1218,9 @@ VMNET_CLIENT=/opt/socket_vmnet/bin/socket_vmnet_client
 VMNET_SOCK="/private/var/run/socket_vmnet.bridged.$BRIDGE_IF"
 RUN=()
 if [ -n "$BRIDGE_IF" ] && [ -S "$VMNET_SOCK" ] && [ -x "$VMNET_CLIENT" ]; then
+  # socket_vmnet_client hands QEMU the socket on the lowest free fd, which
+  # must be 3: the command below runs with fd 3 closed (bash <(curl ...) and
+  # other callers can leave it open)
   RUN=("$VMNET_CLIENT" "$VMNET_SOCK")
   NET_ARGS=(-device "virtio-net-pci,netdev=lan,mac=$MAC_LAN" -netdev socket,id=lan,fd=3
             -device "virtio-net-pci,netdev=nat,mac=$MAC_LOCAL" -netdev "$NAT")
@@ -1244,7 +1247,7 @@ ${RUN[@]+"${RUN[@]}"} "$QEMU_BIN" "${QEMU_MACHINE[@]}" \
   -pidfile "$DIR/qemu.pid" \
   -display none \
   -chardev stdio,id=con0,mux=on,signal=off \
-  -serial chardev:con0 "${QEMU_MONITOR[@]}" <&0 &
+  -serial chardev:con0 "${QEMU_MONITOR[@]}" <&0 3>&- &
 qpid=$!
 wpid=""
 if [ "$WINSIZE" = 1 ]; then
