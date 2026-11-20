@@ -39,7 +39,6 @@ When it finishes, it offers to start Arch right away. Enter the disk passphrase,
 | `archuninstall` | Mac | Removes what the setup installed. Asks about each item separately, so you can keep QEMU or the VM disk and remove the rest |
 | `archseal verify` / `archseal accept` | Mac | Checks the seal by hand / shows what changed and seals the current state after you confirm |
 | `ssh -p 2222 user@localhost` | Mac | SSH into the running VM (bound to `127.0.0.1` only) |
-| `https://localhost:9090` | Mac | [Cockpit](https://cockpit-project.org) web admin panel, if you install it in the wizard (bound to `127.0.0.1` only; self-signed certificate, the browser warns once) |
 
 Inside the VM, `sudo poweroff` works too, and so does <kbd>Ctrl</kbd>+<kbd>A</kbd> then <kbd>X</kbd> (instant hard stop). <kbd>Ctrl</kbd>+<kbd>C</kbd> goes to the program running inside Arch, as in any terminal; it does not stop the VM.
 
@@ -78,7 +77,7 @@ Mac                                         VM
 
 The installer creates your account, **`user`** (`ARCHOPEN_USER` to pick another name), in `wheel`, removes the tarball's default `alarm` account (its password is publicly known) and **locks root**: no root login on the console, none over SSH. Use `sudo -i` for a root shell.
 
-`sudo` needs **no password on the serial console**, the terminal running `archopen`: that terminal already sits behind your Mac login, the integrity seal and the disk passphrase. Everywhere else (SSH, Cockpit's administrative access, another terminal) it asks for your password. A PAM rule in `/etc/pam.d/sudo` does this by matching the terminal (`ttyAMA0`); the verification boot checks both sides.
+`sudo` needs **no password on the serial console**, the terminal running `archopen`: that terminal already sits behind your Mac login, the integrity seal and the disk passphrase. Everywhere else (SSH, another terminal) it asks for your password. A PAM rule in `/etc/pam.d/sudo` does this by matching the terminal (`ttyAMA0`); the verification boot checks both sides.
 
 The temporary password `user` expires once the install has checked everything: the first login asks for it once more and then for a new one.
 
@@ -88,8 +87,7 @@ At your first login on the console a one-time wizard starts (through `sudo`) and
 
 1. [**zsh_setup**](https://github.com/arifcinartekin/zsh_setup) for you: zsh, Oh My Zsh, Powerlevel10k, autosuggestions, syntax highlighting. The p10k configuration wizard runs at the end
 2. **htop**, **fastfetch** with an `info` command, and [**lsd**](https://github.com/lsd-rs/lsd) (`ls` with colors and icons). fastfetch also runs at every login, so you see the system info each time you `archopen`. With lsd, `ls`, `ll`, `la` and `lt` (tree) use it
-3. [**Cockpit**](https://cockpit-project.org), the web admin panel (`cockpit`, `cockpit-storaged`, `cockpit-files`, all from the official Arch Linux ARM repos). `archopen` forwards it to `https://localhost:9090` on the Mac, `127.0.0.1` only. Log in as `user`; *Turn on administrative access* asks for your password. The Arch Linux ARM `cockpit` package is sometimes built for the previous Python (today: 3.13 while the system runs 3.14), and every login would then fail; the wizard makes the package's own module visible to the current Python (a `.pth` file and a symlink under `/usr/local`, nothing pacman owns), and a pacman hook redoes that check after every `cockpit` or `python` update, removing the shim once the package is rebuilt
-4. [**ly**](https://github.com/fairyglade/ly) as the login screen on the console (big clock, user and session picker; <kbd>F1</kbd> shuts down, <kbd>F2</kbd> reboots)
+3. [**ly**](https://github.com/fairyglade/ly) as the login screen on the console (big clock, user and session picker; <kbd>F1</kbd> shuts down, <kbd>F2</kbd> reboots)
 
 Then it removes itself and logs you out, onto the ly login screen if you chose it. Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to skip it; it runs again at the next login on the console.
 
@@ -164,7 +162,6 @@ All optional, set as environment variables in front of the install command:
 | `ARCHOPEN_ROOT_SIZE` / `ARCHOPEN_ESP_SIZE` | `20G` / `1G` | Disk sizes (thin-provisioned qcow2) |
 | `ARCHOPEN_USER` | `user` | Your account inside the VM (wheel, sudo) |
 | `ARCHOPEN_SSH_PORT` | `2222` | Host port forwarded to the VM's port 22 |
-| `ARCHOPEN_COCKPIT_PORT` | `9090` | Host port forwarded to Cockpit (the VM's port 9090). If something on the Mac already uses it, `archopen` boots without the Cockpit forward and says so; the VM can be started with another one: `ARCHOPEN_COCKPIT_PORT=9091 archopen` |
 | `ARCHOPEN_LUKS_PASSPHRASE` | | Disk passphrase, instead of asking for it (needed for an install without a terminal) |
 | `ARCHOPEN_YES=1` | | Do not ask for confirmation |
 | `ARCHOPEN_FORCE=1` | | Overwrite an existing install |
@@ -213,7 +210,7 @@ gh release create alpine-<version> --latest=false --title "Alpine <version> aarc
 
 ```
 archopen-setup.sh                   Mac: the installer (the one-liner runs this)
-guest/archopen-firstboot.sh         VM:  first-boot wizard (zsh, tools, Cockpit, login screen)
+guest/archopen-firstboot.sh         VM:  first-boot wizard (zsh, tools, login screen)
 guest/archopen-winsize.sh           VM:  applies the Mac terminal's size to the serial console
 mac/archclose.sh                    Mac: `archclose`
 mac/archuninstall.sh                Mac: `archuninstall`
@@ -244,8 +241,6 @@ Files on your Mac after install (`~/vm/archarm`): `disk.qcow2`, `efi.qcow2`, `va
 | Plain console login instead of ly (or back) | `sudo archopen-firstboot --login-screen console` (or `ly`) |
 | Text stays at the old size after resizing the window | The VM was started by a launcher from an older version: reinstall. Inside Arch, `systemctl status archopen-winsize` shows whether the size helper runs |
 | Root password wanted | root is locked on purpose: `sudo -i`. To give it a password anyway: `sudo passwd root` |
-| Cockpit: login fails with an internal error | `journalctl -b | grep -A3 cockpit-bridge`. `No module named 'cockpit'`: `sudo archopen-firstboot --cockpit-python` |
-| Cockpit: page does not load | Did you install it in the wizard? Inside Arch: `systemctl status cockpit.socket`. On the Mac: is the port taken (`archopen` says so at boot)? Later install: `sudo pacman -S cockpit cockpit-storaged cockpit-files && sudo systemctl enable --now cockpit.socket` |
 | Skipped zsh setup | As your user: `sh /usr/local/share/archopen/zsh_setup.sh` |
 | Plain `ls` instead of lsd | Remove the `archopen lsd` block from `~/.zshrc` (bash: `~/.bashrc`), or run `\ls` once |
 | No fastfetch at login | Remove the `archopen info` block from `~/.zprofile` (bash: `~/.bash_profile`). The `info` alias is in `~/.zshrc` (bash: `~/.bashrc`) |

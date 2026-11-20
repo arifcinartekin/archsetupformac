@@ -11,10 +11,8 @@
 #   1) Optionally runs zsh_setup.sh for you (zsh, Oh My Zsh, Powerlevel10k)
 #   2) Optionally installs htop, fastfetch with an `info` alias that also
 #      runs at every login, and lsd (ls, ll, la, lt use it)
-#   3) Optionally installs Cockpit, the web admin panel (https://localhost:9090
-#      on the Mac, forwarded by archopen)
-#   4) Optionally sets up the ly login screen on the console
-#   5) Removes its own login hook
+#   3) Optionally sets up the ly login screen on the console
+#   4) Removes its own login hook
 #
 # Ctrl+C aborts; it runs again at the next login on the console.
 #
@@ -24,8 +22,6 @@
 #   sudo archopen-firstboot --disable    do not run it at login anymore
 #   sudo archopen-firstboot --login-screen ly|console
 #                                        ly login screen, or the plain console login
-#   sudo archopen-firstboot --cockpit-python
-#                                        make sure cockpit-bridge loads (run by a pacman hook)
 #
 set -euo pipefail
 
@@ -41,16 +37,12 @@ TEMP_SUDOERS="/etc/sudoers.d/99-archopen-firstboot"
 CONSOLE_TTY="ttyAMA0"
 LY_CONFIG="/etc/ly/config.ini"
 SHELL_SESSION="/usr/local/bin/archopen-shell-session"
-COCKPIT_PKGS=(cockpit cockpit-storaged cockpit-files)
-COCKPIT_PYDIR="/usr/local/lib/archopen/cockpit-python"
-COCKPIT_PTH="archopen-cockpit.pth"
 
 NEW_USER=""
 DO_ZSH=1
 DO_HTOP=1
 DO_FASTFETCH=1
 DO_LSD=1
-DO_COCKPIT=1
 DO_LY=1
 
 if [ -t 1 ]; then
@@ -70,7 +62,6 @@ conf_get() {
   printf '%s' "${v:-$2}"
 }
 SSH_PORT="$(conf_get ARCHOPEN_SSH_PORT 2222)"
-COCKPIT_PORT="$(conf_get ARCHOPEN_COCKPIT_PORT 9090)"
 
 # ----------------------------------------------------------------------------
 # Login hook: /etc/profile.d is read by bash and (through /etc/zsh/zprofile) zsh
@@ -136,7 +127,6 @@ ask_questions() {
   ask_yes_no "Install htop (interactive process viewer)?" y && DO_HTOP=1 || DO_HTOP=0
   ask_yes_no "Install fastfetch (system info, 'info' command, shown at every login)?" y && DO_FASTFETCH=1 || DO_FASTFETCH=0
   ask_yes_no "Install lsd (ls with colors and icons; ls, ll, la, lt use it)?" y && DO_LSD=1 || DO_LSD=0
-  ask_yes_no "Install Cockpit (web admin panel, https://localhost:$COCKPIT_PORT on the Mac)?" y && DO_COCKPIT=1 || DO_COCKPIT=0
   ask_yes_no "Use the ly login screen instead of the plain console login?" y && DO_LY=1 || DO_LY=0
 }
 
@@ -174,7 +164,6 @@ install_tools() {
   [ "$DO_HTOP" = 1 ] && pkgs+=(htop)
   [ "$DO_FASTFETCH" = 1 ] && pkgs+=(fastfetch)
   [ "$DO_LSD" = 1 ] && pkgs+=(lsd)
-  [ "$DO_COCKPIT" = 1 ] && pkgs+=("${COCKPIT_PKGS[@]}")
   [ "$DO_LY" = 1 ] && pkgs+=(ly)
   [ "${#pkgs[@]}" -gt 0 ] || return 0
   log "Packages: ${pkgs[*]}"
@@ -232,74 +221,6 @@ setup_lsd() {
     "alias la='lsd -la'" \
     "alias lt='lsd --tree'")"
   ok "ls, ll, la, lt use lsd ($(basename "$USER_RC"))"
-}
-
-# The Arch Linux ARM cockpit package can lag behind a Python update: built for
-# python3.13 while python is 3.14, cockpit-bridge then dies with "No module named
-# 'cockpit'" and every login fails. If so, the package's own module is made
-# visible to the current Python through a .pth file and a symlink in /usr/local,
-# nothing pacman owns. Once a rebuilt package is importable on its own, the
-# shim is removed. A pacman hook runs this after every cockpit or python update.
-cockpit_python() {
-  pacman -Q cockpit >/dev/null 2>&1 || return 0
-  rm -f /usr/lib/python3*/site-packages/"$COCKPIT_PTH"
-  if python3 -c 'import cockpit.bridge' >/dev/null 2>&1; then
-    rm -rf "$COCKPIT_PYDIR"
-    return 0
-  fi
-  local src site
-  src="$(pacman -Qlq cockpit | grep -m1 -E '^/usr/lib/python3\.[0-9]+/site-packages/cockpit/$' || true)"
-  src="${src%/}"
-  site="$(python3 -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || true)"
-  if [ -z "$src" ] || [ ! -d "$src" ] || [ ! -d "$site" ]; then
-    warn "cockpit's Python module was not found; Cockpit logins will fail"
-    return 1
-  fi
-  mkdir -p "$COCKPIT_PYDIR"
-  ln -sfn "$src" "$COCKPIT_PYDIR/cockpit"
-  printf '%s\n' "$COCKPIT_PYDIR" > "$site/$COCKPIT_PTH"
-  if python3 -c 'import cockpit.bridge' >/dev/null 2>&1; then
-    ok "cockpit's module ($src) made visible to $(python3 --version 2>&1) until the package is rebuilt"
-  else
-    warn "cockpit's module could not be loaded by $(python3 --version 2>&1); Cockpit logins will fail"
-    return 1
-  fi
-}
-
-install_cockpit_hook() {
-  mkdir -p /etc/pacman.d/hooks
-  cat > /etc/pacman.d/hooks/90-archopen-cockpit-python.hook <<'PACHOOK_EOF'
-# archopen: keeps cockpit-bridge loadable when python and cockpit are out of step
-[Trigger]
-Operation = Install
-Operation = Upgrade
-Type = Package
-Target = cockpit
-Target = python
-
-[Action]
-Description = Checking that Cockpit's Python module loads (archopen)...
-When = PostTransaction
-Exec = /usr/local/sbin/archopen-firstboot --cockpit-python
-PACHOOK_EOF
-}
-
-setup_cockpit() {
-  [ "$DO_COCKPIT" = 1 ] || return 0
-  log "Cockpit"
-  if ! pacman -Q cockpit >/dev/null 2>&1; then
-    warn "cockpit is not installed; later: sudo pacman -S ${COCKPIT_PKGS[*]} && sudo systemctl enable --now cockpit.socket"
-    return 0
-  fi
-  install_cockpit_hook
-  cockpit_python || true
-  # Socket activation: cockpit-ws only runs while the panel is in use
-  if systemctl enable --now cockpit.socket >/dev/null 2>&1; then
-    COCKPIT_OK=1
-    ok "https://localhost:$COCKPIT_PORT on the Mac, log in as $NEW_USER (self-signed certificate: the browser warns once)"
-  else
-    warn "cockpit.socket could not be started (sudo systemctl status cockpit.socket)"
-  fi
 }
 
 # ----------------------------------------------------------------------------
@@ -412,21 +333,16 @@ run_wizard() {
   printf 'Press Ctrl+C to skip it for now.\n\n'
 
   LY_OK=0
-  COCKPIT_OK=0
   ask_questions
   install_tools
   run_zsh_setup
   setup_info
   setup_lsd
-  setup_cockpit
   setup_login_screen
   remove_hook
 
   printf '\n%sDone.%s\n' "$C_B" "$C_0"
   printf '  SSH from the Mac    : ssh -p %s %s@localhost\n' "$SSH_PORT" "$NEW_USER"
-  if [ "$COCKPIT_OK" = 1 ]; then
-    printf '  Cockpit on the Mac  : https://localhost:%s  (log in as %s)\n' "$COCKPIT_PORT" "$NEW_USER"
-  fi
   printf '  root                : locked; sudo works without a password on this console only\n'
   printf '  Shut down           : archclose (on the Mac) or sudo poweroff\n\n'
   if [ "$LY_OK" = 1 ]; then
@@ -443,8 +359,7 @@ case "${1:-}" in
   --enable)  enable_hook ;;
   --disable) [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"; remove_hook ;;
   --login-screen) set_login_screen "${2:-}" ;;
-  --cockpit-python) [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"; cockpit_python ;;
   "")        run_wizard ;;
-  -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
   *)         die "unknown option: $1 (help: --help)" ;;
 esac

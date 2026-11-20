@@ -22,7 +22,7 @@
 # Keychain and refuses to boot if one of them changed. Then it asks for the
 # disk passphrase. Root is locked from the start: log in as `user` (password:
 # user, changed at the first login); sudo needs no password on the serial
-# console. The first-boot wizard then offers zsh, tools, Cockpit and ly.
+# console. The first-boot wizard then offers zsh, tools and ly.
 #
 # Usage:
 #   bash archopen-setup.sh
@@ -36,7 +36,7 @@
 #   ARCHOPEN_PIN_BREW=1         brew pin qemu gnupg (keep brew upgrade away from them)
 #   ARCHOPEN_CPUS=4  ARCHOPEN_MEM=4G  ARCHOPEN_ROOT_SIZE=20G  ARCHOPEN_ESP_SIZE=1G
 #   ARCHOPEN_USER=user          Your account inside Arch (wheel, sudo)
-#   ARCHOPEN_SSH_PORT=2222  ARCHOPEN_COCKPIT_PORT=9090   Mac ports (127.0.0.1 only)
+#   ARCHOPEN_SSH_PORT=2222      Mac port for SSH (127.0.0.1 only)
 #   ARCHOPEN_LUKS_PASSPHRASE=...  Disk passphrase (otherwise asked for; needed with ARCHOPEN_YES=1 without a terminal)
 #   ARCHOPEN_REPO=owner/name  ARCHOPEN_REF=main   Where companion files are fetched from
 #   ARCHOPEN_ARCH_TARBALL_URL=... ARCH_TARBALL_SHA256=...   Use a different tarball
@@ -93,7 +93,6 @@ ROOT_SIZE="${ARCHOPEN_ROOT_SIZE:-20G}"
 ESP_SIZE="${ARCHOPEN_ESP_SIZE:-1G}"
 ARCH_USER="${ARCHOPEN_USER:-user}"
 SSH_PORT="${ARCHOPEN_SSH_PORT:-2222}"
-COCKPIT_PORT="${ARCHOPEN_COCKPIT_PORT:-9090}"
 ACCEL="${ARCHOPEN_ACCEL:-hvf}"
 CPU_MODEL="${ARCHOPEN_CPU:-host}"
 
@@ -235,12 +234,8 @@ check_platform() {
   printf '%s' "$ARCH_HOSTNAME" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' || die "Invalid hostname: $ARCH_HOSTNAME"
   printf '%s' "$ARCH_USER" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || die "Invalid user name: $ARCH_USER"
   case "$ARCH_USER" in root|alarm) die "Pick a user name other than $ARCH_USER (ARCHOPEN_USER)." ;; esac
-  local p
-  for p in "$SSH_PORT" "$COCKPIT_PORT"; do
-    case "$p" in ''|*[!0-9]*) die "Invalid port: $p" ;; esac
-    [ "$p" -ge 1024 ] && [ "$p" -le 65535 ] || die "Port out of range (1024-65535): $p"
-  done
-  [ "$SSH_PORT" != "$COCKPIT_PORT" ] || die "ARCHOPEN_SSH_PORT and ARCHOPEN_COCKPIT_PORT must differ."
+  case "$SSH_PORT" in ''|*[!0-9]*) die "Invalid port: $SSH_PORT" ;; esac
+  [ "$SSH_PORT" -ge 1024 ] && [ "$SSH_PORT" -le 65535 ] || die "Port out of range (1024-65535): $SSH_PORT"
 }
 
 ensure_deps() {
@@ -321,7 +316,7 @@ confirm_plan() {
   Integrity seal    : VM files checked before every boot, seal in the macOS Keychain
   Hostname          : ${ARCH_HOSTNAME}
   Account           : ${ARCH_USER} (sudo, no password on the serial console); root locked
-  Mac ports         : SSH 127.0.0.1:${SSH_PORT}, Cockpit 127.0.0.1:${COCKPIT_PORT} (if installed)
+  Mac ports         : SSH 127.0.0.1:${SSH_PORT}
   Alpine            : ${ALPINE_VERSION} (verified with sha256 + GPG)
   Arch Linux ARM    : ${ARCH_TARBALL} (verified with pinned sha256 + GPG)
   Will change       : brew packages (qemu, gnupg),
@@ -418,7 +413,6 @@ write_manifest() {
     echo "installed_formulae=$formulae"
     echo "pinned_formulae=$([ "${ARCHOPEN_PIN_BREW:-0}" = 1 ] && echo "qemu gnupg")"
     echo "ssh_port=$SSH_PORT"
-    echo "cockpit_port=$COCKPIT_PORT"
   } > "$MANIFEST"
 }
 
@@ -582,7 +576,7 @@ die()  { echo "ARCHOPEN_ERROR: $*"; exit 1; }
 trap 'rc=$?; [ "$rc" -eq 0 ] || echo "ARCHOPEN_ERROR: guest script exited with code $rc"' EXIT
 
 : "${ROOT_UUID:?}" "${LUKS_UUID:?}" "${ESP_ID:?}" "${ESP_UUID:?}" "${FILES_URL:?}" "${TARBALL_SHA256:?}" "${ALPINE_SERIES:?}"
-: "${ARCH_HOSTNAME:?}" "${ARCH_USER:?}" "${USER_PW:?}" "${SSH_PORT:?}" "${COCKPIT_PORT:?}"
+: "${ARCH_HOSTNAME:?}" "${ARCH_USER:?}" "${USER_PW:?}" "${SSH_PORT:?}"
 HAS_TERMINFO="${HAS_TERMINFO:-0}"
 ESP_OPTS="rw,relatime,fmask=0077,dmask=0077,errors=remount-ro"
 BTRFS_OPTS="rw,noatime,compress=zstd:1"
@@ -799,7 +793,7 @@ visudo -cf /tmp/10-wheel >/dev/null || { echo "ARCHOPEN_ERROR: invalid sudoers f
 install -m 0440 -o root -g root /tmp/10-wheel /etc/sudoers.d/10-wheel
 rm -f /tmp/10-wheel
 # sudo without a password, but only on the serial console (the Mac terminal
-# running archopen). SSH, Cockpit and every other terminal still ask for it.
+# running archopen). SSH and every other terminal still ask for it.
 # sudo puts its terminal in PAM_TTY; pam_succeed_if lets it through before pam_unix
 if ! grep -q 'archopen: serial console' /etc/pam.d/sudo; then
   awk '!done && /^auth/ {
@@ -818,7 +812,6 @@ passwd -l root >/dev/null
 cat > /etc/archopen.conf <<CONF_EOF
 ARCHOPEN_USER=$ARCH_USER
 ARCHOPEN_SSH_PORT=$SSH_PORT
-ARCHOPEN_COCKPIT_PORT=$COCKPIT_PORT
 CONF_EOF
 chmod 644 /etc/archopen.conf
 
@@ -834,7 +827,7 @@ CHROOT_EOF
 chroot /mnt /usr/bin/env -i HOME=/root TERM=dumb LANG=C \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/bin \
   ROOT_UUID="$ROOT_UUID" LUKS_UUID="$LUKS_UUID" ARCH_USER="$ARCH_USER" \
-  SSH_PORT="$SSH_PORT" COCKPIT_PORT="$COCKPIT_PORT" \
+  SSH_PORT="$SSH_PORT" \
   /bin/bash /root/archopen-chroot.sh || die "installation inside the chroot failed"
 rm -f /mnt/root/archopen-chroot.sh /mnt/root/.archopen-pw /mnt/root/.archopen-terminfo
 
@@ -930,7 +923,7 @@ append vars " ESP_ID=$env(ARCHOPEN_ESP_ID) ESP_UUID=$env(ARCHOPEN_ESP_UUID)"
 append vars " FILES_URL=http://10.0.2.2:$env(ARCHOPEN_PORT) TARBALL_SHA256=$env(ARCHOPEN_TARBALL_SHA256)"
 append vars " ALPINE_SERIES=$env(ARCHOPEN_ALPINE_SERIES) ARCH_HOSTNAME=$env(ARCHOPEN_HOSTNAME)"
 append vars " HAS_TERMINFO=$env(ARCHOPEN_HAS_TERMINFO) ARCH_USER=$env(ARCHOPEN_USER) USER_PW=$env(ARCHOPEN_USER_PW)"
-append vars " SSH_PORT=$env(ARCHOPEN_SSH_PORT) COCKPIT_PORT=$env(ARCHOPEN_COCKPIT_PORT)"
+append vars " SSH_PORT=$env(ARCHOPEN_SSH_PORT)"
 set timeout $env(ARCHOPEN_IDLE_TIMEOUT)
 send -- "$vars sh /tmp/guest.sh; echo ARCHOPEN_GUEST_DONE=\$?\r"
 
@@ -1025,7 +1018,6 @@ s.close()')"
   ARCHOPEN_USER="$ARCH_USER" \
   ARCHOPEN_USER_PW="$TEMP_USER_PASSWORD" \
   ARCHOPEN_SSH_PORT="$SSH_PORT" \
-  ARCHOPEN_COCKPIT_PORT="$COCKPIT_PORT" \
   ARCHOPEN_BOOT_NUDGES="${ARCHOPEN_BOOT_NUDGES:-40}" \
   ARCHOPEN_IDLE_TIMEOUT="${ARCHOPEN_IDLE_TIMEOUT:-1800}" \
     expect -f "$WORK/installer.exp" || die "The installer VM failed. Log: $LOG_FILE"
@@ -1053,9 +1045,8 @@ write_start_script() {
     printf '# Arch Linux ARM (QEMU) launcher. Generated by archopen-setup.sh.\n'
     printf '# Quit: `archclose` from another Mac terminal, `poweroff` inside the VM, or Ctrl+A then X.\n'
     printf '# Ctrl+C goes to the guest (it does not stop the VM).\n'
-    printf '# SSH: ssh -p %s %s@localhost   Cockpit: https://localhost:%s\n' "$SSH_PORT" "$ARCH_USER" "$COCKPIT_PORT"
+    printf '# SSH: ssh -p %s %s@localhost\n' "$SSH_PORT" "$ARCH_USER"
     printf 'SSH_PORT="${ARCHOPEN_SSH_PORT:-%s}"\n' "$SSH_PORT"
-    printf 'COCKPIT_PORT="${ARCHOPEN_COCKPIT_PORT:-%s}"\n' "$COCKPIT_PORT"
     printf 'QEMU_BIN=%q\n' "$QEMU_BIN"
     printf 'QEMU_MACHINE=(-machine virt,highmem=on -accel %q -cpu %q -smp %q -m %q)\n' "$ACCEL" "$CPU_MODEL" "$CPUS" "$MEM"
     printf 'QEMU_MONITOR=(%s)\n' "$mon_opt"
@@ -1082,14 +1073,8 @@ if [ "$WINSIZE" = 1 ]; then
     -chardev "pipe,id=winsize,path=$DIR/winsize"
     -device virtserialport,bus=vser0.0,chardev=winsize,name=org.archopen.winsize)
 fi
-# Ports on the Mac, 127.0.0.1 only. QEMU refuses to start if one is taken, so
-# Cockpit's is left out (with a note) when something on the Mac already uses it
+# SSH port on the Mac, 127.0.0.1 only
 NETDEV="user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
-if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "$COCKPIT_PORT" >/dev/null 2>&1; then
-  echo "Port $COCKPIT_PORT is in use on this Mac: Cockpit is not forwarded this time (other port: ARCHOPEN_COCKPIT_PORT=...)" >&2
-else
-  NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:${COCKPIT_PORT}-:9090"
-fi
 # Closing the terminal must not skip the reseal below; QEMU still gets the signal
 hup=""
 trap 'hup=1' HUP TERM
@@ -1232,7 +1217,7 @@ if {$rootfs ne "btrfs"} { die "the root filesystem is '$rootfs', expected btrfs"
 if {$crypt ne "luks"} { die "the root filesystem is not on the LUKS volume (or sudo asked for a password on the console)" }
 
 # Root locked; sudo needs no password here (serial console) but does without a
-# terminal, which stands for every other way in (SSH, Cockpit)
+# terminal, which stands for every other way in (SSH)
 send -- "echo ARCHOPEN_ACC_\$(sudo -n passwd -S root | cut -d' ' -f2)_\$(sudo -n true 2>/dev/null && echo free || echo pw)_\$(setsid -w sudo -n true </dev/null >/dev/null 2>&1 && echo free || echo pw)_END\r"
 expect {
     -re {ARCHOPEN_ACC_([A-Z]*)_([a-z]+)_([a-z]+)_END} {
@@ -1405,10 +1390,9 @@ main() {
   First login     : user ${ARCH_USER}, password ${TEMP_USER_PASSWORD}; you set a new password right away.
                     root is locked; sudo needs no password on this console (the
                     terminal running archopen) and asks for it everywhere else.
-                    The first-boot wizard then offers zsh, htop, fastfetch, lsd,
-                    Cockpit and the ly login screen.
+                    The first-boot wizard then offers zsh, htop, fastfetch, lsd
+                    and the ly login screen.
   SSH             : ssh -p $SSH_PORT ${ARCH_USER}@localhost   (reachable from this Mac only)
-  Cockpit         : https://localhost:$COCKPIT_PORT   (if you install it in the wizard; this Mac only)
   Directory       : $INSTALL_DIR
   Version record  : $INSTALL_DIR/versions.lock
 
