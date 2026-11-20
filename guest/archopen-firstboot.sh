@@ -37,6 +37,7 @@ TEMP_SUDOERS="/etc/sudoers.d/99-archopen-firstboot"
 CONSOLE_TTY="ttyAMA0"
 LY_CONFIG="/etc/ly/config.ini"
 SHELL_SESSION="/usr/local/bin/archopen-shell-session"
+LY_WRAPPER="/usr/local/sbin/archopen-ly"
 
 NEW_USER=""
 DO_ZSH=1
@@ -247,6 +248,30 @@ configure_ly() {
   ly_set bigclock en
   # ly would send the shell's output to this log instead of the terminal
   ly_set session_log null
+
+  # A serial console has no size (0x0) until archopen-winsize hands it the
+  # Mac terminal's, and ly aborts on a 0x0 screen. The size only sticks while
+  # the console is open, so a wrapper sets 80x24 on its own stdin (the console)
+  # and then becomes ly; archopen-winsize corrects it within two seconds.
+  # Restart: should ly ever exit, the console must not stay empty
+  cat > "$LY_WRAPPER" <<'WRAPPER_EOF'
+#!/bin/sh
+# Starts ly on the serial console with a usable size (archopen)
+case "$(stty size 2>/dev/null)" in
+  ""|"0 "*|*" 0") stty rows 24 cols 80 2>/dev/null ;;
+esac
+exec /usr/bin/ly-dm "$@"
+WRAPPER_EOF
+  chmod 755 "$LY_WRAPPER"
+  mkdir -p /etc/systemd/system/ly@.service.d
+  cat > /etc/systemd/system/ly@.service.d/archopen.conf <<DROPIN_EOF
+[Service]
+ExecStart=
+ExecStart=$LY_WRAPPER
+Restart=always
+RestartSec=1
+DROPIN_EOF
+  systemctl daemon-reload
 
   # The session to log into: your login shell, in this terminal
   cat > "$SHELL_SESSION" <<'SESSION_EOF'
